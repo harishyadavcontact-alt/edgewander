@@ -6,7 +6,10 @@ import {
   buildCandidateMatches,
   canPublishCandidate,
   candidateDraftFromSource,
-  publishCandidateToCatalog
+  freshnessStateFromTimestamp,
+  publishInvariantFailures,
+  publishCandidateToCatalog,
+  reverifyPublishedNode
 } from "./ingestion";
 import { resolveLocationContext } from "./spatial";
 
@@ -63,6 +66,7 @@ describe("Google Places ingestion pipeline", () => {
     draft.exitOptions = [];
 
     expect(canPublishCandidate(draft)).toBe(false);
+    expect(publishInvariantFailures(draft)).toContain("At least one Red Thread theme tag is required.");
     expect(() =>
       publishCandidateToCatalog({
         candidate: baseCandidate(),
@@ -145,5 +149,37 @@ describe("Google Places ingestion pipeline", () => {
     ]);
 
     expect(surfacedIds).toContain(publication.published.nodeId);
+  });
+
+  it("re-verifies published nodes without clobbering editorial framing", () => {
+    const candidate = baseCandidate({ sourceUpdatedAt: "2025-01-01T00:00:00.000Z" });
+    const draft = candidateDraftFromSource(candidate);
+    draft.themeTags = ["Cities Beneath Cities"];
+    draft.interestTags = ["subculture", "history"];
+    draft.narrativeHook = "A verified editorialized backroom stack in Jimbocho.";
+    draft.exitOptions = ["Station concourse", "Staffed hotel lobby"];
+
+    const publication = publishCandidateToCatalog({
+      candidate,
+      draft,
+      catalog: seedExperiences
+    });
+
+    const reverified = reverifyPublishedNode({
+      nodeId: publication.published.nodeId,
+      catalog: publication.nextCatalog,
+      publishedSources: [publication.published],
+      note: "Fresh hours confirmed against source.",
+      verifiedAt: "2026-03-08T12:00:00.000Z"
+    });
+    const node = reverified.nextCatalog.find((entry) => entry.id === publication.published.nodeId);
+    const sourceRecord = reverified.nextPublishedSources.find(
+      (entry) => entry.nodeId === publication.published.nodeId
+    );
+
+    expect(node?.narrativeHook).toBe(draft.narrativeHook);
+    expect(node?.sourceUpdatedAt).toBe("2026-03-08T12:00:00.000Z");
+    expect(sourceRecord?.lastVerifiedAt).toBe("2026-03-08T12:00:00.000Z");
+    expect(freshnessStateFromTimestamp(node?.sourceUpdatedAt)).toBe("fresh");
   });
 });

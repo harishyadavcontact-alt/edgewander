@@ -293,6 +293,8 @@ export interface PublishedSourceRecord {
   sourceType: "google-places";
   sourceId: string;
   publishedAt: string;
+  lastVerifiedAt?: string;
+  verificationNote?: string;
 }
 
 export interface EditorialState {

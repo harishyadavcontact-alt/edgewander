@@ -7,6 +7,7 @@ import type {
   IngestionCandidate,
   IngestionQuery,
   InterestTag,
+  NodeFreshnessState,
   PublishedSourceRecord,
   VerificationStatus
 } from "../types";
@@ -48,6 +49,23 @@ export interface CandidatePublishDraft {
   durationMinutes: number;
   operatingWindows: ExperienceNode["operatingWindows"];
   editorialNotes?: string;
+}
+
+export function freshnessStateFromTimestamp(sourceUpdatedAt?: string): NodeFreshnessState {
+  if (!sourceUpdatedAt) {
+    return "aging";
+  }
+
+  const ageMs = Date.now() - new Date(sourceUpdatedAt).getTime();
+  if (ageMs > 1000 * 60 * 60 * 24 * 45) {
+    return "stale";
+  }
+
+  if (ageMs > 1000 * 60 * 60 * 24 * 21) {
+    return "aging";
+  }
+
+  return "fresh";
 }
 
 function slug(value: string) {
@@ -298,15 +316,46 @@ export function candidateDraftFromSource(candidate: IngestionCandidate): Candida
   };
 }
 
+export function publishInvariantFailures(draft: CandidatePublishDraft) {
+  const failures: string[] = [];
+
+  if (draft.title.trim().length < 4) {
+    failures.push("Publish title must be at least 4 characters.");
+  }
+
+  if (draft.category.trim().length < 3) {
+    failures.push("Category must be set before publication.");
+  }
+
+  if (draft.narrativeHook.trim().length <= 10) {
+    failures.push("Narrative hook must explain why the node belongs in EdgeWander.");
+  }
+
+  if (draft.themeTags.length === 0) {
+    failures.push("At least one Red Thread theme tag is required.");
+  }
+
+  if (draft.interestTags.length === 0) {
+    failures.push("At least one traveler interest tag is required.");
+  }
+
+  if (draft.legalConfidence < 0.95) {
+    failures.push("Legal confidence must be at least 0.95.");
+  }
+
+  if (draft.consentClarity < 0.95) {
+    failures.push("Consent clarity must be at least 0.95.");
+  }
+
+  if (draft.exitOptions.filter((entry) => entry.trim().length > 0).length === 0) {
+    failures.push("At least one explicit exit option is required.");
+  }
+
+  return failures;
+}
+
 export function canPublishCandidate(draft: CandidatePublishDraft) {
-  return (
-    draft.narrativeHook.trim().length > 10 &&
-    draft.themeTags.length > 0 &&
-    draft.interestTags.length > 0 &&
-    draft.legalConfidence >= 0.95 &&
-    draft.consentClarity >= 0.95 &&
-    draft.exitOptions.filter((entry) => entry.trim().length > 0).length > 0
-  );
+  return publishInvariantFailures(draft).length === 0;
 }
 
 export function publishCandidateToCatalog(args: {
@@ -360,7 +409,8 @@ export function publishCandidateToCatalog(args: {
         nodeId: target.id,
         sourceType: "google-places",
         sourceId: args.candidate.sourceId,
-        publishedAt: new Date().toISOString()
+        publishedAt: new Date().toISOString(),
+        lastVerifiedAt: args.candidate.sourceUpdatedAt
       } satisfies PublishedSourceRecord
     };
   }
@@ -405,8 +455,64 @@ export function publishCandidateToCatalog(args: {
       nodeId: nextNode.id,
       sourceType: "google-places",
       sourceId: args.candidate.sourceId,
-      publishedAt: new Date().toISOString()
+      publishedAt: new Date().toISOString(),
+      lastVerifiedAt: args.candidate.sourceUpdatedAt
     } satisfies PublishedSourceRecord
+  };
+}
+
+export function reverifyPublishedNode(args: {
+  nodeId: string;
+  catalog: ExperienceNode[];
+  publishedSources: PublishedSourceRecord[];
+  note?: string;
+  verifiedAt?: string;
+}) {
+  const verifiedAt = args.verifiedAt ?? new Date().toISOString();
+  const targetNode = args.catalog.find((node) => node.id === args.nodeId);
+  if (!targetNode || targetNode.sourceType !== "google-places" || !targetNode.sourceId) {
+    throw new Error("Only Google-backed published nodes can be re-verified.");
+  }
+
+  const nextCatalog: ExperienceNode[] = args.catalog.map((node) =>
+    node.id === args.nodeId
+      ? {
+          ...node,
+          sourceUpdatedAt: verifiedAt,
+          verificationStatus: "approved" as const,
+          lastReviewedAt: verifiedAt,
+          editorialNotes: args.note ? `${node.editorialNotes ?? ""}\n${args.note}`.trim() : node.editorialNotes
+        }
+      : node
+  );
+
+  const mappingExists = args.publishedSources.some((record) => record.nodeId === args.nodeId);
+  const nextPublishedSources: PublishedSourceRecord[] = mappingExists
+    ? args.publishedSources.map((record) =>
+        record.nodeId === args.nodeId
+          ? {
+              ...record,
+              lastVerifiedAt: verifiedAt,
+              verificationNote: args.note ?? record.verificationNote
+            }
+          : record
+      )
+    : [
+        {
+          nodeId: args.nodeId,
+          sourceType: "google-places" as const,
+          sourceId: targetNode.sourceId,
+          publishedAt: verifiedAt,
+          lastVerifiedAt: verifiedAt,
+          verificationNote: args.note
+        },
+        ...args.publishedSources
+      ];
+
+  return {
+    nextCatalog,
+    nextPublishedSources,
+    verifiedAt
   };
 }
 
@@ -450,17 +556,13 @@ export function applyCandidateDecision(
 }
 
 export function trustBadgeForNode(node: ExperienceNode) {
-  const ageMs = node.sourceUpdatedAt
-    ? Date.now() - new Date(node.sourceUpdatedAt).getTime()
-    : 0;
-  const fresh = ageMs < 1000 * 60 * 60 * 24 * 21;
-  const stale = ageMs > 1000 * 60 * 60 * 24 * 45;
+  const freshness = freshnessStateFromTimestamp(node.sourceUpdatedAt);
 
-  if (stale && node.sourceType === "google-places") {
+  if (freshness === "stale" && node.sourceType === "google-places") {
     return "Stale source";
   }
 
-  if (node.verificationStatus === "approved" && fresh && node.sourceType === "google-places") {
+  if (node.verificationStatus === "approved" && freshness === "fresh" && node.sourceType === "google-places") {
     return "Freshly verified";
   }
 

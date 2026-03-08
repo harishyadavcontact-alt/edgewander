@@ -5,10 +5,12 @@ import { buildNodeId, cloneSeedCatalog, defaultExperienceDraft, validateCatalog 
 import { buildTrailResult, createTrailCache, summarizeReports } from "./lib/engine";
 import {
   applyCandidateDecision,
-  canPublishCandidate,
   candidateDraftFromSource,
+  freshnessStateFromTimestamp,
   importGooglePlacesCandidates,
+  publishInvariantFailures,
   publishCandidateToCatalog,
+  reverifyPublishedNode,
   trustBadgeForNode
 } from "./lib/ingestion";
 import { defaultMapRegions, emergencyAnchorsByCity, resolveLocationContext } from "./lib/spatial";
@@ -491,6 +493,21 @@ function App() {
     ingestionCandidates.find((candidate) => candidate.id === selectedCandidateId) ??
     ingestionCandidates[0] ??
     null;
+  const candidateInvariantFailures = candidateDraft ? publishInvariantFailures(candidateDraft) : [];
+  const publishedByFreshness = {
+    fresh: publishedSources.filter((record) => {
+      const node = catalog.find((entry) => entry.id === record.nodeId);
+      return freshnessStateFromTimestamp(node?.sourceUpdatedAt) === "fresh";
+    }),
+    aging: publishedSources.filter((record) => {
+      const node = catalog.find((entry) => entry.id === record.nodeId);
+      return freshnessStateFromTimestamp(node?.sourceUpdatedAt) === "aging";
+    }),
+    stale: publishedSources.filter((record) => {
+      const node = catalog.find((entry) => entry.id === record.nodeId);
+      return freshnessStateFromTimestamp(node?.sourceUpdatedAt) === "stale";
+    })
+  };
 
   function touchTravelerSync() {
     setSyncMetadata((current) => ({
@@ -812,6 +829,23 @@ function App() {
       setEditorMessage("Candidate approved and published into the vetted catalog.");
     } catch (error) {
       setEditorMessage(error instanceof Error ? error.message : "Candidate publish failed.");
+    }
+  }
+
+  function reverifyPublished(nodeId: string) {
+    try {
+      const reverified = reverifyPublishedNode({
+        nodeId,
+        catalog,
+        publishedSources,
+        note: "Editorial re-verification completed in studio."
+      });
+      setCatalog(reverified.nextCatalog);
+      setPublishedSources(reverified.nextPublishedSources);
+      touchEditorialSync();
+      setEditorMessage(`Published node re-verified at ${formatSyncTime(reverified.verifiedAt)}.`);
+    } catch (error) {
+      setEditorMessage(error instanceof Error ? error.message : "Re-verification failed.");
     }
   }
 
@@ -1424,6 +1458,17 @@ function App() {
                         : "none"}
                     </div>
 
+                    {candidateInvariantFailures.length > 0 && (
+                      <div className="notice notice--soft notice--warn">
+                        <strong>Publish blocked until these Guardian invariants are satisfied:</strong>
+                        <ul className="notice-list">
+                          {candidateInvariantFailures.map((failure) => (
+                            <li key={failure}>{failure}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
                     <div className="field-grid field-grid--tight">
                       <label className="field">
                         <span>Publish title</span>
@@ -1590,7 +1635,7 @@ function App() {
                         className="primary-button"
                         type="button"
                         onClick={approveCandidate}
-                        disabled={!canPublishCandidate(candidateDraft)}
+                        disabled={candidateInvariantFailures.length > 0}
                       >
                         {selectedCandidate.matchedNodeId ? "Merge + publish" : "Approve + publish"}
                       </button>
@@ -1603,11 +1648,27 @@ function App() {
 
           {editorTab === "published" && (
             <div className="published-list">
+              <div className="field-grid field-grid--tight">
+                <article className="essential-card">
+                  <strong>Freshly verified</strong>
+                  <div className="sync-copy">{publishedByFreshness.fresh.length} nodes</div>
+                </article>
+                <article className="essential-card">
+                  <strong>Aging</strong>
+                  <div className="sync-copy">{publishedByFreshness.aging.length} nodes</div>
+                </article>
+                <article className="essential-card">
+                  <strong>Stale</strong>
+                  <div className="sync-copy">{publishedByFreshness.stale.length} nodes</div>
+                </article>
+              </div>
+
               {publishedSources.length === 0 && (
                 <div className="notice notice--soft">No external-source publications yet.</div>
               )}
               {publishedSources.map((record) => {
                 const node = catalog.find((entry) => entry.id === record.nodeId);
+                const freshness = freshnessStateFromTimestamp(node?.sourceUpdatedAt);
                 return (
                   <article className="essential-card" key={`${record.nodeId}-${record.sourceId}`}>
                     <strong>{node?.title ?? record.nodeId}</strong>
@@ -1616,7 +1677,16 @@ function App() {
                     </div>
                     <div className="sync-copy">Published {formatSyncTime(record.publishedAt)}</div>
                     <div className="sync-copy">
+                      Freshness: {freshness}
+                      {record.lastVerifiedAt ? ` · re-verified ${formatSyncTime(record.lastVerifiedAt)}` : ""}
+                    </div>
+                    <div className="sync-copy">
                       Trust badge: {node ? trustBadgeForNode(node) : "Vetted"}
+                    </div>
+                    <div className="drawer-actions">
+                      <button className="ghost-button" type="button" onClick={() => reverifyPublished(record.nodeId)}>
+                        Re-verify source
+                      </button>
                     </div>
                   </article>
                 );

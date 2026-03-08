@@ -698,6 +698,11 @@ button {
   color: #ffd5d0;
 }
 
+.notice-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
 .branch__actions {
   display: flex;
   flex-wrap: wrap;

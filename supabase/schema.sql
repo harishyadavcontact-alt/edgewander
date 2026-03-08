@@ -67,5 +67,7 @@ create table if not exists source_mappings (
   node_id text primary key,
   source_type text not null,
   source_id text not null unique,
-  published_at timestamptz not null default timezone('utc', now())
+  published_at timestamptz not null default timezone('utc', now()),
+  last_verified_at timestamptz,
+  verification_note text
 );
