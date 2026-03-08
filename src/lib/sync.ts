@@ -1,5 +1,9 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type {
+  EditorialState,
+  IngestionCandidate,
+  PublishedSourceRecord,
+  RemoteEditorialStateRecord,
   RemoteTripSessionRecord,
   RemoteTravelerProfileRecord,
   SyncIdentity,
@@ -19,6 +23,7 @@ export interface SyncRunArgs {
   identity: SyncIdentity | null;
   travelerState: TravelerState;
   tripSession: TripSession;
+  editorialState: EditorialState;
   metadata: SyncMetadata;
   enabled?: boolean;
 }
@@ -27,6 +32,7 @@ export interface SyncRunResult {
   identity: SyncIdentity | null;
   travelerState: TravelerState;
   tripSession: TripSession;
+  editorialState: EditorialState;
   metadata: SyncMetadata;
   status: SyncStatus;
   mergedRemote: boolean;
@@ -83,9 +89,30 @@ export function defaultSyncMetadata(): SyncMetadata {
   return {
     travelerStateUpdatedAt: null,
     tripSessionUpdatedAt: null,
+    editorialStateUpdatedAt: null,
     lastSyncedAt: null,
     pendingPush: false,
     lastError: null
+  };
+}
+
+function cloneCandidate(candidate: IngestionCandidate): IngestionCandidate {
+  return {
+    ...candidate,
+    trustSignals: { ...candidate.trustSignals },
+    placeMetadata: candidate.placeMetadata ? { ...candidate.placeMetadata } : undefined,
+    matches: candidate.matches.map((match) => ({ ...match }))
+  };
+}
+
+function clonePublishedSource(record: PublishedSourceRecord): PublishedSourceRecord {
+  return { ...record };
+}
+
+function cloneEditorialState(state: EditorialState): EditorialState {
+  return {
+    ingestionCandidates: state.ingestionCandidates.map(cloneCandidate),
+    publishedSources: state.publishedSources.map(clonePublishedSource)
   };
 }
 
@@ -115,6 +142,43 @@ export function mergeReportMap(
   }
 
   return next;
+}
+
+function mergeCandidates(local: IngestionCandidate[], remote: IngestionCandidate[]) {
+  const merged = new Map<string, IngestionCandidate>();
+
+  for (const candidate of [...remote, ...local]) {
+    const existing = merged.get(candidate.id);
+    if (!existing) {
+      merged.set(candidate.id, cloneCandidate(candidate));
+      continue;
+    }
+
+    const winner =
+      asIso(candidate.lastReviewedAt ?? candidate.importedAt) >=
+      asIso(existing.lastReviewedAt ?? existing.importedAt)
+        ? candidate
+        : existing;
+    merged.set(candidate.id, cloneCandidate(winner));
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    asIso(right.lastReviewedAt ?? right.importedAt).localeCompare(
+      asIso(left.lastReviewedAt ?? left.importedAt)
+    )
+  );
+}
+
+function mergePublishedSources(local: PublishedSourceRecord[], remote: PublishedSourceRecord[]) {
+  const merged = new Map<string, PublishedSourceRecord>();
+
+  for (const record of [...remote, ...local]) {
+    merged.set(`${record.nodeId}:${record.sourceId}`, clonePublishedSource(record));
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    right.publishedAt.localeCompare(left.publishedAt)
+  );
 }
 
 export function mergeTravelerState(
@@ -175,6 +239,35 @@ export function mergeTripSession(
 
   return {
     tripSession,
+    updatedAt: maxTimestamp(localUpdatedAt, remoteRecord.updated_at)
+  };
+}
+
+export function mergeEditorialState(
+  localState: EditorialState,
+  localUpdatedAt: string | null,
+  remoteRecord: RemoteEditorialStateRecord | null
+) {
+  if (!remoteRecord) {
+    return {
+      editorialState: cloneEditorialState(localState),
+      updatedAt: localUpdatedAt
+    };
+  }
+
+  const remoteState = remoteRecord.payload_json;
+
+  return {
+    editorialState: {
+      ingestionCandidates: mergeCandidates(
+        localState.ingestionCandidates,
+        remoteState.ingestionCandidates
+      ),
+      publishedSources: mergePublishedSources(
+        localState.publishedSources,
+        remoteState.publishedSources
+      )
+    },
     updatedAt: maxTimestamp(localUpdatedAt, remoteRecord.updated_at)
   };
 }
@@ -281,6 +374,23 @@ async function fetchTripSessionRecord(
   return data as RemoteTripSessionRecord | null;
 }
 
+async function fetchEditorialStateRecord(
+  client: SupabaseClient,
+  travelerId: string
+): Promise<RemoteEditorialStateRecord | null> {
+  const { data, error } = await client
+    .from("editorial_states")
+    .select("traveler_id,payload_json,updated_at")
+    .eq("traveler_id", travelerId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data as RemoteEditorialStateRecord | null;
+}
+
 function shouldPushRecord(localUpdatedAt: string | null, remoteUpdatedAt: string | null) {
   return asIso(localUpdatedAt) >= asIso(remoteUpdatedAt);
 }
@@ -335,6 +445,28 @@ async function pushTripSessionRecord(
   }
 }
 
+async function pushEditorialStateRecord(
+  client: SupabaseClient,
+  travelerId: string,
+  editorialState: EditorialState,
+  updatedAt: string
+) {
+  const { error } = await client.from("editorial_states").upsert(
+    {
+      traveler_id: travelerId,
+      payload_json: editorialState,
+      updated_at: updatedAt
+    },
+    {
+      onConflict: "traveler_id"
+    }
+  );
+
+  if (error) {
+    throw error;
+  }
+}
+
 export async function syncEdgeWanderState(args: SyncRunArgs): Promise<SyncRunResult> {
   const client = getSupabaseClient();
   if (!client || args.enabled === false) {
@@ -342,6 +474,7 @@ export async function syncEdgeWanderState(args: SyncRunArgs): Promise<SyncRunRes
       identity: args.identity,
       travelerState: cloneTravelerState(args.travelerState),
       tripSession: cloneTripSession(args.tripSession),
+      editorialState: cloneEditorialState(args.editorialState),
       metadata: args.metadata,
       status: "idle",
       mergedRemote: false
@@ -354,6 +487,7 @@ export async function syncEdgeWanderState(args: SyncRunArgs): Promise<SyncRunRes
       identity,
       travelerState: cloneTravelerState(args.travelerState),
       tripSession: cloneTripSession(args.tripSession),
+      editorialState: cloneEditorialState(args.editorialState),
       metadata: {
         ...args.metadata,
         pendingPush: true
@@ -363,9 +497,10 @@ export async function syncEdgeWanderState(args: SyncRunArgs): Promise<SyncRunRes
     };
   }
 
-  const [remoteTravelerRecord, remoteTripRecord] = await Promise.all([
+  const [remoteTravelerRecord, remoteTripRecord, remoteEditorialRecord] = await Promise.all([
     fetchTravelerRecord(client, identity.travelerId),
-    fetchTripSessionRecord(client, identity.travelerId, args.tripSession)
+    fetchTripSessionRecord(client, identity.travelerId, args.tripSession),
+    fetchEditorialStateRecord(client, identity.travelerId)
   ]);
 
   const mergedTraveler = mergeTravelerState(
@@ -378,10 +513,16 @@ export async function syncEdgeWanderState(args: SyncRunArgs): Promise<SyncRunRes
     args.metadata.tripSessionUpdatedAt,
     remoteTripRecord
   );
+  const mergedEditorial = mergeEditorialState(
+    args.editorialState,
+    args.metadata.editorialStateUpdatedAt,
+    remoteEditorialRecord
+  );
 
   const mergedRemote =
     !sameJson(mergedTraveler.travelerState, args.travelerState) ||
-    !sameJson(mergedTrip.tripSession, args.tripSession);
+    !sameJson(mergedTrip.tripSession, args.tripSession) ||
+    !sameJson(mergedEditorial.editorialState, args.editorialState);
 
   const needsTravelerPush =
     args.metadata.pendingPush ||
@@ -393,11 +534,19 @@ export async function syncEdgeWanderState(args: SyncRunArgs): Promise<SyncRunRes
     !remoteTripRecord ||
     !sameJson(remoteTripRecord.payload_json, mergedTrip.tripSession) ||
     shouldPushRecord(args.metadata.tripSessionUpdatedAt, remoteTripRecord.updated_at);
+  const needsEditorialPush =
+    args.metadata.pendingPush ||
+    !remoteEditorialRecord ||
+    !sameJson(remoteEditorialRecord.payload_json, mergedEditorial.editorialState) ||
+    shouldPushRecord(args.metadata.editorialStateUpdatedAt, remoteEditorialRecord.updated_at);
 
   const nextTravelerUpdatedAt = needsTravelerPush
     ? new Date().toISOString()
     : mergedTraveler.updatedAt;
   const nextTripUpdatedAt = needsTripPush ? new Date().toISOString() : mergedTrip.updatedAt;
+  const nextEditorialUpdatedAt = needsEditorialPush
+    ? new Date().toISOString()
+    : mergedEditorial.updatedAt;
 
   if (needsTravelerPush) {
     await pushTravelerRecord(client, identity.travelerId, mergedTraveler.travelerState, nextTravelerUpdatedAt ?? new Date().toISOString());
@@ -407,15 +556,26 @@ export async function syncEdgeWanderState(args: SyncRunArgs): Promise<SyncRunRes
     await pushTripSessionRecord(client, identity.travelerId, mergedTrip.tripSession, nextTripUpdatedAt ?? new Date().toISOString());
   }
 
+  if (needsEditorialPush) {
+    await pushEditorialStateRecord(
+      client,
+      identity.travelerId,
+      mergedEditorial.editorialState,
+      nextEditorialUpdatedAt ?? new Date().toISOString()
+    );
+  }
+
   const lastSyncedAt = new Date().toISOString();
 
   return {
     identity,
     travelerState: mergedTraveler.travelerState,
     tripSession: mergedTrip.tripSession,
+    editorialState: mergedEditorial.editorialState,
     metadata: {
       travelerStateUpdatedAt: nextTravelerUpdatedAt,
       tripSessionUpdatedAt: nextTripUpdatedAt,
+      editorialStateUpdatedAt: nextEditorialUpdatedAt,
       lastSyncedAt,
       pendingPush: false,
       lastError: null

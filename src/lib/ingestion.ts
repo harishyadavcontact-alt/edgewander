@@ -450,9 +450,15 @@ export function applyCandidateDecision(
 }
 
 export function trustBadgeForNode(node: ExperienceNode) {
-  const fresh =
-    node.sourceUpdatedAt &&
-    Date.now() - new Date(node.sourceUpdatedAt).getTime() < 1000 * 60 * 60 * 24 * 21;
+  const ageMs = node.sourceUpdatedAt
+    ? Date.now() - new Date(node.sourceUpdatedAt).getTime()
+    : 0;
+  const fresh = ageMs < 1000 * 60 * 60 * 24 * 21;
+  const stale = ageMs > 1000 * 60 * 60 * 24 * 45;
+
+  if (stale && node.sourceType === "google-places") {
+    return "Stale source";
+  }
 
   if (node.verificationStatus === "approved" && fresh && node.sourceType === "google-places") {
     return "Freshly verified";

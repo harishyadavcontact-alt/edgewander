@@ -13,8 +13,15 @@ create table if not exists trip_sessions (
   primary key (traveler_id, city, trip_start_date)
 );
 
+create table if not exists editorial_states (
+  traveler_id uuid primary key references auth.users (id) on delete cascade,
+  payload_json jsonb not null,
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
 alter table traveler_profiles enable row level security;
 alter table trip_sessions enable row level security;
+alter table editorial_states enable row level security;
 
 create policy "anonymous travelers manage own profile"
 on traveler_profiles
@@ -24,6 +31,12 @@ with check (auth.uid() = traveler_id);
 
 create policy "anonymous travelers manage own sessions"
 on trip_sessions
+for all
+using (auth.uid() = traveler_id)
+with check (auth.uid() = traveler_id);
+
+create policy "anonymous travelers manage own editorial state"
+on editorial_states
 for all
 using (auth.uid() = traveler_id)
 with check (auth.uid() = traveler_id);

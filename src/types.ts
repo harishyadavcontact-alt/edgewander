@@ -20,6 +20,7 @@ export type LocationSource = "live" | "city-fallback" | "cached";
 export type SourceType = "editorial" | "google-places";
 export type VerificationStatus = "pending" | "matched" | "approved" | "rejected" | "stale";
 export type EditorialStatus = "draft" | "review" | "approved" | "rejected";
+export type NodeFreshnessState = "fresh" | "aging" | "stale";
 
 export interface TravelerProfile {
   destination: Destination;
@@ -67,6 +68,39 @@ export interface TrustSignals {
   freshnessConfidence: number;
   locationConfidence: number;
   operationalConfidence: number;
+}
+
+export interface RecommendationTrace {
+  id: string;
+  nodeId?: string;
+  arcId: string;
+  lane: "guardian" | "expressive" | "fallback";
+  outcome: "surfaced" | "suppressed" | "fallback" | "locked" | "demoted";
+  score?: number;
+  freshness: NodeFreshnessState;
+  reasons: string[];
+}
+
+export interface PublishedNodeAudit {
+  nodeId: string;
+  sourceType: SourceType;
+  sourceId?: string;
+  freshness: NodeFreshnessState;
+  verificationStatus: VerificationStatus;
+  sourceUpdatedAt?: string;
+  lastReviewedAt?: string;
+  lastReviewNote?: string;
+}
+
+export interface QuestLogEntry {
+  arcId: string;
+  label: string;
+  redThread: string;
+  status: "completed" | "skipped" | "available" | "locked";
+  nodeId?: string;
+  nodeTitle?: string;
+  lane: "guardian" | "expressive" | "fallback";
+  createdAt: string;
 }
 
 export interface ExperienceNode {
@@ -186,6 +220,9 @@ export interface TrailCache {
   locationSource: LocationSource;
   effectiveLocation: Coordinates;
   mapRegion: MapRegionCache;
+  traces: RecommendationTrace[];
+  audits: PublishedNodeAudit[];
+  questLog: QuestLogEntry[];
 }
 
 export interface TrailResult {
@@ -198,6 +235,9 @@ export interface TrailResult {
   locationSource: LocationSource;
   effectiveLocation: Coordinates;
   mapRegion: MapRegionCache;
+  traces: RecommendationTrace[];
+  audits: PublishedNodeAudit[];
+  questLog: QuestLogEntry[];
   usedCache: boolean;
 }
 
@@ -253,6 +293,11 @@ export interface PublishedSourceRecord {
   sourceType: "google-places";
   sourceId: string;
   publishedAt: string;
+}
+
+export interface EditorialState {
+  ingestionCandidates: IngestionCandidate[];
+  publishedSources: PublishedSourceRecord[];
 }
 
 export interface RoutePreview {
@@ -312,6 +357,7 @@ export interface SyncIdentity {
 export interface SyncMetadata {
   travelerStateUpdatedAt: string | null;
   tripSessionUpdatedAt: string | null;
+  editorialStateUpdatedAt: string | null;
   lastSyncedAt: string | null;
   pendingPush: boolean;
   lastError: string | null;
@@ -328,6 +374,12 @@ export interface RemoteTripSessionRecord {
   city: Destination;
   trip_start_date: string;
   payload_json: TripSession;
+  updated_at: string;
+}
+
+export interface RemoteEditorialStateRecord {
+  traveler_id: string;
+  payload_json: EditorialState;
   updated_at: string;
 }
 

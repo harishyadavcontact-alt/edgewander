@@ -163,6 +163,10 @@ button {
   line-height: 1.65;
 }
 
+.hero__notice {
+  max-width: 56ch;
+}
+
 .signal-board {
   margin-top: 24px;
   padding-top: 18px;
@@ -178,6 +182,10 @@ button {
   margin-top: 6px;
   font-size: 1.25rem;
   font-weight: 700;
+}
+
+.shell-toggle {
+  margin-top: 16px;
 }
 
 .signal-grid {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
+  EditorialState,
+  RemoteEditorialStateRecord,
   RemoteTripSessionRecord,
   RemoteTravelerProfileRecord,
   TravelerProfile,
@@ -7,7 +9,13 @@ import type {
   TripSession,
   VisitReport
 } from "../types";
-import { defaultSyncMetadata, mergeReportMap, mergeTravelerState, mergeTripSession } from "./sync";
+import {
+  defaultSyncMetadata,
+  mergeEditorialState,
+  mergeReportMap,
+  mergeTravelerState,
+  mergeTripSession
+} from "./sync";
 
 function profile(overrides: Partial<TravelerProfile> = {}): TravelerProfile {
   return {
@@ -62,6 +70,39 @@ function tripSession(overrides: Partial<TripSession> = {}): TripSession {
       center: { lat: 35.71, lng: 139.79 },
       zoom: 13
     },
+    ...overrides
+  };
+}
+
+function editorialState(overrides: Partial<EditorialState> = {}): EditorialState {
+  return {
+    ingestionCandidates: [
+      {
+        id: "candidate-tokyo-annex",
+        city: "Tokyo",
+        query: "folklore bookstore",
+        sourceType: "google-places",
+        sourceId: "google_tokyo_annex",
+        title: "Jimbocho Folklore Annex",
+        category: "Specialty bookstore",
+        neighborhood: "Jimbocho",
+        lat: 35.6968,
+        lng: 139.7581,
+        areaRadius: 420,
+        sourceUpdatedAt: "2026-03-08T08:00:00.000Z",
+        verificationStatus: "pending",
+        editorialStatus: "review",
+        trustSignals: {
+          sourceConfidence: 0.84,
+          freshnessConfidence: 0.88,
+          locationConfidence: 0.94,
+          operationalConfidence: 0.82
+        },
+        matches: [],
+        importedAt: "2026-03-08T08:00:00.000Z"
+      }
+    ],
+    publishedSources: [],
     ...overrides
   };
 }
@@ -149,9 +190,51 @@ describe("EdgeWander sync merge policy", () => {
     const metadata = defaultSyncMetadata();
     const mergedTraveler = mergeTravelerState(travelerState(), metadata.travelerStateUpdatedAt, null);
     const mergedTrip = mergeTripSession(tripSession(), metadata.tripSessionUpdatedAt, null);
+    const mergedEditorial = mergeEditorialState(
+      editorialState(),
+      metadata.editorialStateUpdatedAt,
+      null
+    );
 
     expect(mergedTraveler.travelerState.completedNodeIds).toEqual(["tokyo-sensoji-shadow-bell"]);
     expect(mergedTrip.tripSession.visitedNodes).toEqual(["tokyo-sensoji-shadow-bell"]);
+    expect(mergedEditorial.editorialState.ingestionCandidates).toHaveLength(1);
     expect(mergedTrip.updatedAt).toBeNull();
+  });
+
+  it("merges editorial state candidates and published mappings across local and remote", () => {
+    const remote: RemoteEditorialStateRecord = {
+      traveler_id: "anon-1",
+      updated_at: "2026-03-08T10:00:00.000Z",
+      payload_json: {
+        ingestionCandidates: [
+          {
+            ...editorialState().ingestionCandidates[0],
+            id: "candidate-tokyo-kagurazaka",
+            sourceId: "google_tokyo_kagurazaka",
+            title: "Kagurazaka Paper Courtyard",
+            importedAt: "2026-03-08T09:00:00.000Z"
+          }
+        ],
+        publishedSources: [
+          {
+            nodeId: "tokyo-jimbocho-occult-stack",
+            sourceType: "google-places",
+            sourceId: "google_tokyo_occult_stack",
+            publishedAt: "2026-03-08T09:30:00.000Z"
+          }
+        ]
+      }
+    };
+
+    const merged = mergeEditorialState(
+      editorialState(),
+      "2026-03-08T08:30:00.000Z",
+      remote
+    );
+
+    expect(merged.editorialState.ingestionCandidates).toHaveLength(2);
+    expect(merged.editorialState.publishedSources).toHaveLength(1);
+    expect(merged.updatedAt).toBe("2026-03-08T10:00:00.000Z");
   });
 });

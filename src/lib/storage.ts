@@ -1,5 +1,6 @@
 import type {
   Coordinates,
+  EditorialState,
   EmergencyAnchor,
   ExperienceNode,
   IngestionCandidate,
@@ -152,6 +153,16 @@ export function buildTravelerState(
     profile,
     completedNodeIds,
     reportMap
+  };
+}
+
+export function buildEditorialState(
+  ingestionCandidates: IngestionCandidate[],
+  publishedSources: PublishedSourceRecord[]
+): EditorialState {
+  return {
+    ingestionCandidates,
+    publishedSources
   };
 }
 

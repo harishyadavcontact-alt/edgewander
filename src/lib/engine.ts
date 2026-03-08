@@ -19,8 +19,12 @@ import type {
   InterestTag,
   LocationContext,
   MapRegionCache,
+  NodeFreshnessState,
+  PublishedNodeAudit,
   QuestArc,
   QuestBranch,
+  QuestLogEntry,
+  RecommendationTrace,
   ReviewSummary,
   RiskEnvelope,
   TrailCache,
@@ -97,6 +101,11 @@ const safeFallbackCopy = {
     "Daredevil found no legal, consent-clear swing worth taking inside the current safety envelope."
 };
 
+const freshnessWindows = {
+  fresh: 21,
+  aging: 45
+};
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
@@ -111,6 +120,95 @@ function average(values: number[]) {
 
 function normalizeConfidence(value: number) {
   return clamp(value / 100, 0, 1);
+}
+
+function freshnessFor(node: ExperienceNode): NodeFreshnessState {
+  if (!node.sourceUpdatedAt || node.sourceType === "editorial") {
+    return "fresh";
+  }
+
+  const ageDays =
+    (Date.now() - new Date(node.sourceUpdatedAt).getTime()) / (1000 * 60 * 60 * 24);
+
+  if (ageDays <= freshnessWindows.fresh) {
+    return "fresh";
+  }
+
+  if (ageDays <= freshnessWindows.aging) {
+    return "aging";
+  }
+
+  return "stale";
+}
+
+function reasonsForNode(
+  node: ExperienceNode,
+  risk: RiskEnvelope,
+  locationContext: LocationContext,
+  redThread: string,
+  focus: InterestTag[]
+) {
+  const reasons = [];
+
+  if (node.themeTags.includes(redThread)) {
+    reasons.push(`Matches Red Thread: ${redThread}`);
+  }
+
+  const alignedFocus = focus.filter((tag) => node.interestTags.includes(tag));
+  if (alignedFocus.length > 0) {
+    reasons.push(`Fits slot focus: ${alignedFocus.join(", ")}`);
+  }
+
+  reasons.push(`Exit quality ${node.transportExitQuality}/100`);
+  reasons.push(`Solo safety ${node.soloSafetyScore}/100`);
+  reasons.push(`Distance ${distanceKm(locationContext.effectiveLocation, { lat: node.lat, lng: node.lng }).toFixed(1)} km`);
+
+  const freshness = freshnessFor(node);
+  if (freshness !== "fresh") {
+    reasons.push(`Source freshness is ${freshness}`);
+  }
+
+  if (risk.timeOfDay === "night") {
+    reasons.push("Night envelope is active");
+  }
+
+  return reasons;
+}
+
+function makeTrace(args: {
+  arcId: string;
+  lane: "guardian" | "expressive" | "fallback";
+  node?: ExperienceNode;
+  outcome: RecommendationTrace["outcome"];
+  score?: number;
+  reasons: string[];
+}): RecommendationTrace {
+  return {
+    id: `${args.arcId}-${args.lane}-${args.node?.id ?? args.outcome}`,
+    nodeId: args.node?.id,
+    arcId: args.arcId,
+    lane: args.lane,
+    outcome: args.outcome,
+    score: args.score,
+    freshness: args.node ? freshnessFor(args.node) : "fresh",
+    reasons: args.reasons
+  };
+}
+
+function auditNode(node: ExperienceNode): PublishedNodeAudit {
+  return {
+    nodeId: node.id,
+    sourceType: node.sourceType,
+    sourceId: node.sourceId,
+    freshness: freshnessFor(node),
+    verificationStatus:
+      freshnessFor(node) === "stale" && node.verificationStatus === "approved"
+        ? "stale"
+        : node.verificationStatus,
+    sourceUpdatedAt: node.sourceUpdatedAt,
+    lastReviewedAt: node.lastReviewedAt,
+    lastReviewNote: node.editorialNotes
+  };
 }
 
 function cityNodes(profile: TravelerProfile, catalog: ExperienceNode[]) {
@@ -314,11 +412,8 @@ function interestMatch(node: ExperienceNode, profile: TravelerProfile) {
 }
 
 function provenanceTrustBoost(node: ExperienceNode) {
-  const freshnessPenalty =
-    node.sourceUpdatedAt &&
-    Date.now() - new Date(node.sourceUpdatedAt).getTime() > 1000 * 60 * 60 * 24 * 45
-      ? -6
-      : 0;
+  const freshness = freshnessFor(node);
+  const freshnessPenalty = freshness === "stale" ? -8 : freshness === "aging" ? -3 : 0;
 
   const trustSignalBoost =
     (node.trustSignals.sourceConfidence +
@@ -328,7 +423,7 @@ function provenanceTrustBoost(node: ExperienceNode) {
     4;
 
   const verificationBoost =
-    node.verificationStatus === "approved" ? 6 : node.verificationStatus === "stale" ? -4 : 0;
+    node.verificationStatus === "approved" ? 6 : freshness === "stale" ? -4 : 0;
 
   return trustSignalBoost + freshnessPenalty + verificationBoost;
 }
@@ -610,14 +705,27 @@ function buildArc(
   redThread: string,
   completedNodeIds: string[],
   summaries: Record<string, ReviewSummary>
-): QuestArc {
+): { arc: QuestArc; traces: RecommendationTrace[] } {
   const risk = slotRisk(liveRisk, blueprint.slot);
+  const traces: RecommendationTrace[] = [];
   const guardians = sortByScore(
     guardianCandidates(profile, catalog, risk, locationContext, blueprint.slot, summaries),
     (node) =>
       guardianScore(node, profile, risk, locationContext, redThread, blueprint.focus, summaries[node.id])
   );
   const guardianNode = guardians[0];
+  const guardianNodeScore =
+    guardianNode
+      ? guardianScore(
+          guardianNode,
+          profile,
+          risk,
+          locationContext,
+          redThread,
+          blueprint.focus,
+          summaries[guardianNode.id]
+        )
+      : undefined;
   const guardian = guardianNode
     ? {
         lane: "guardian" as const,
@@ -633,6 +741,28 @@ function buildArc(
         "fallback",
         "No guardian node passed the current legality, safety, and exitability filters."
       );
+
+  if (guardianNode && guardianNodeScore !== undefined) {
+    traces.push(
+      makeTrace({
+        arcId: blueprint.id,
+        lane: "guardian",
+        node: guardianNode,
+        outcome: "surfaced",
+        score: Number(guardianNodeScore.toFixed(2)),
+        reasons: reasonsForNode(guardianNode, risk, locationContext, redThread, blueprint.focus)
+      })
+    );
+  } else {
+    traces.push(
+      makeTrace({
+        arcId: blueprint.id,
+        lane: "guardian",
+        outcome: "fallback",
+        reasons: ["No guardian node passed legality, safety, distance, and exitability filters."]
+      })
+    );
+  }
 
   let expressive: QuestBranch;
 
@@ -654,6 +784,29 @@ function buildArc(
           "suppressed",
           "High-stakes conditions tightened the safety envelope."
         );
+
+    traces.push(
+      makeTrace({
+        arcId: blueprint.id,
+        lane: "expressive",
+        node: downgradedNode,
+        outcome: downgradedNode ? "demoted" : "suppressed",
+        score: downgradedNode
+          ? Number(
+              guardianScore(
+                downgradedNode,
+                profile,
+                risk,
+                locationContext,
+                redThread,
+                blueprint.focus,
+                summaries[downgradedNode.id]
+              ).toFixed(2)
+            )
+          : undefined,
+        reasons: ["High-stakes conditions tightened the safety envelope."]
+      })
+    );
   } else {
     const expressiveNodes = sortByScore(
       expressiveCandidates(
@@ -672,6 +825,14 @@ function buildArc(
     const expressiveNode = expressiveNodes[0];
 
     if (expressiveNode) {
+      const expressiveNodeScore = expressiveScore(
+        expressiveNode,
+        profile,
+        locationContext,
+        redThread,
+        blueprint.focus,
+        summaries[expressiveNode.id]
+      );
       expressive = {
         lane: "expressive",
         status: "available",
@@ -680,6 +841,17 @@ function buildArc(
         rationale: "Daredevil found a higher-novelty branch that still leaves you an obvious way out.",
         exitPlan: exitPlanFor(expressiveNode, profile.destination)
       };
+
+      traces.push(
+        makeTrace({
+          arcId: blueprint.id,
+          lane: "expressive",
+          node: expressiveNode,
+          outcome: "surfaced",
+          score: Number(expressiveNodeScore.toFixed(2)),
+          reasons: reasonsForNode(expressiveNode, risk, locationContext, redThread, blueprint.focus)
+        })
+      );
     } else {
       const lockedNode = sortByScore(
         lockedExpressiveCandidates(
@@ -709,6 +881,20 @@ function buildArc(
             "suppressed",
             "No expressive branch stayed within the safety cap for this slot."
           );
+
+      traces.push(
+        makeTrace({
+          arcId: blueprint.id,
+          lane: "expressive",
+          node: lockedNode,
+          outcome: lockedNode ? "locked" : "suppressed",
+          reasons: [
+            lockedNode
+              ? `Threshold locked until ${lockedNode.unlockAfter?.join(", ")}`
+              : "No expressive branch stayed within the safety cap for this slot."
+          ]
+        })
+      );
     }
   }
 
@@ -732,6 +918,31 @@ function buildArc(
         "Fallback route unavailable in the current radius."
       );
 
+  traces.push(
+    makeTrace({
+      arcId: blueprint.id,
+      lane: "fallback",
+      node: fallbackNode,
+      outcome: fallbackNode ? "fallback" : "suppressed",
+      score: fallbackNode
+        ? Number(
+            guardianScore(
+              fallbackNode,
+              profile,
+              risk,
+              locationContext,
+              redThread,
+              blueprint.focus,
+              summaries[fallbackNode.id]
+            ).toFixed(2)
+          )
+        : undefined,
+      reasons: fallbackNode
+        ? reasonsForNode(fallbackNode, risk, locationContext, redThread, blueprint.focus)
+        : ["Fallback route unavailable in the current radius."]
+    })
+  );
+
   const primaryNode =
     guardianNode ??
     expressive.node ??
@@ -742,6 +953,7 @@ function buildArc(
       : undefined;
 
   return {
+    arc: {
     id: blueprint.id,
     label: blueprint.label,
     theme: redThread,
@@ -753,6 +965,8 @@ function buildArc(
     driftCard,
     unlockConditions: expressive.node?.unlockAfter ?? [],
     fallbackPath: destinationEmergencyEssentials[profile.destination][1]
+    },
+    traces
   };
 }
 
@@ -768,6 +982,56 @@ function activeBlueprints(timeOfDay: RiskEnvelope["timeOfDay"]) {
   }
 
   return arcBlueprints.slice(0, 3);
+}
+
+function buildQuestLog(
+  arcs: QuestArc[],
+  tripSession: TripSession | undefined,
+  redThread: string,
+  generatedAt: string,
+  catalog: ExperienceNode[]
+): QuestLogEntry[] {
+  const activeEntries: QuestLogEntry[] = arcs.map((arc) => {
+    const candidate = arc.expressive.node ?? arc.guardian.node ?? arc.fallback.node;
+    const nodeId = candidate?.id;
+    const completed = nodeId ? tripSession?.visitedNodes.includes(nodeId) : false;
+    const skipped = nodeId ? tripSession?.skippedNodes.includes(nodeId) : false;
+    const locked = arc.expressive.status === "locked";
+
+    return {
+      arcId: arc.id,
+      label: arc.label,
+      redThread,
+      status: completed ? "completed" : skipped ? "skipped" : locked ? "locked" : "available",
+      nodeId,
+      nodeTitle: candidate?.title,
+      lane: arc.expressive.status === "available" ? "expressive" : "guardian",
+      createdAt: generatedAt
+    };
+  });
+
+  const surfacedNodeIds = new Set(activeEntries.map((entry) => entry.nodeId).filter(Boolean));
+  const historyNodeIds = [
+    ...(tripSession?.visitedNodes ?? []),
+    ...(tripSession?.skippedNodes ?? [])
+  ].filter((nodeId, index, list) => list.indexOf(nodeId) === index && !surfacedNodeIds.has(nodeId));
+
+  const historicalEntries: QuestLogEntry[] = historyNodeIds.map((nodeId) => {
+    const node = catalog.find((candidate) => candidate.id === nodeId);
+
+    return {
+      arcId: `history-${nodeId}`,
+      label: node ? `Completed thread: ${node.title}` : "Completed thread",
+      redThread,
+      status: tripSession?.visitedNodes.includes(nodeId) ? "completed" : "skipped",
+      nodeId,
+      nodeTitle: node?.title,
+      lane: "fallback" as const,
+      createdAt: generatedAt
+    };
+  });
+
+  return [...activeEntries, ...historicalEntries];
 }
 
 export function buildTrailResult(args: {
@@ -822,12 +1086,15 @@ export function buildTrailResult(args: {
       ...args.cache,
       emergencyEssentials: destinationEmergencyEssentials[args.profile.destination],
       emergencyAnchors,
+      traces: args.cache.traces,
+      audits: args.cache.audits,
+      questLog: args.cache.questLog,
       usedCache: true
     };
   }
 
   const redThread = pickRedThread(args.profile);
-  const arcs = activeBlueprints(args.risk.timeOfDay).map((blueprint) =>
+  const builtArcs = activeBlueprints(args.risk.timeOfDay).map((blueprint) =>
     buildArc(
       blueprint,
       args.profile,
@@ -839,17 +1106,27 @@ export function buildTrailResult(args: {
       summaries
     )
   );
+  const arcs = builtArcs.map((entry) => entry.arc);
+  const traces = builtArcs.flatMap((entry) => entry.traces);
+  const audits = catalog
+    .filter((node) => node.city === args.profile.destination)
+    .map(auditNode);
+  const generatedAt = new Date().toISOString();
+  const questLog = buildQuestLog(arcs, args.tripSession, redThread, generatedAt, catalog);
 
   return {
     destination: args.profile.destination,
     redThread,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     arcs,
     emergencyEssentials: destinationEmergencyEssentials[args.profile.destination],
     emergencyAnchors,
     locationSource: locationContext.source,
     effectiveLocation: locationContext.effectiveLocation,
     mapRegion,
+    traces,
+    audits,
+    questLog,
     usedCache: false
   };
 }
@@ -864,6 +1141,9 @@ export function createTrailCache(trail: TrailResult): TrailCache {
     emergencyAnchors: trail.emergencyAnchors,
     locationSource: trail.locationSource,
     effectiveLocation: trail.effectiveLocation,
-    mapRegion: trail.mapRegion
+    mapRegion: trail.mapRegion,
+    traces: trail.traces,
+    audits: trail.audits,
+    questLog: trail.questLog
   };
 }

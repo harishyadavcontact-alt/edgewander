@@ -13,6 +13,7 @@ import {
 } from "./lib/ingestion";
 import { defaultMapRegions, emergencyAnchorsByCity, resolveLocationContext } from "./lib/spatial";
 import {
+  buildEditorialState,
   buildTravelerState,
   loadCompletedNodeIds,
   loadEmergencyAnchors,
@@ -58,8 +59,10 @@ import type {
   MapRegionCache,
   NoGo,
   PublishedSourceRecord,
+  QuestLogEntry,
   QuestArc,
   QuestBranch,
+  RecommendationTrace,
   RiskEnvelope,
   SyncIdentity,
   SyncMetadata,
@@ -205,6 +208,7 @@ function App() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(
     defaultRisk.connectivity === "offline" ? "offline" : "idle"
   );
+  const [shellMode, setShellMode] = useState<"explore" | "studio">("explore");
   const [editorTab, setEditorTab] = useState<"catalog" | "candidates" | "published">("catalog");
   const [ingestionCandidates, setIngestionCandidates] =
     useState<IngestionCandidate[]>(initialCandidates);
@@ -237,6 +241,7 @@ function App() {
   const syncInFlightRef = useRef(false);
   const nodeTitles = Object.fromEntries(catalog.map((node) => [node.id, node.title]));
   const travelerState = buildTravelerState(profile, completedNodeIds, reportMap);
+  const editorialState = buildEditorialState(ingestionCandidates, publishedSources);
 
   useEffect(() => {
     saveProfile(profile);
@@ -404,7 +409,8 @@ function App() {
     syncMetadata.pendingPush,
     syncMetadata.lastSyncedAt,
     travelerState,
-    tripSession
+    tripSession,
+    editorialState
   ]);
 
   useEffect(() => {
@@ -426,7 +432,7 @@ function App() {
       window.removeEventListener("online", handleOnline);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [syncEnabled, travelerState, tripSession, syncMetadata, syncIdentity, risk.connectivity]);
+  }, [syncEnabled, travelerState, tripSession, editorialState, syncMetadata, syncIdentity, risk.connectivity]);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -479,6 +485,8 @@ function App() {
     mapBranches.find((branch) => branch.node?.id === selectedExploreNodeId) ??
     mapBranches.find((branch) => branch.node) ??
     null;
+  const selectedTrace =
+    trail.traces.find((trace) => trace.nodeId === selectedExploreBranch?.node?.id) ?? null;
   const selectedCandidate =
     ingestionCandidates.find((candidate) => candidate.id === selectedCandidateId) ??
     ingestionCandidates[0] ??
@@ -497,6 +505,15 @@ function App() {
     setSyncMetadata((current) => ({
       ...current,
       tripSessionUpdatedAt: new Date().toISOString(),
+      pendingPush: true,
+      lastError: null
+    }));
+  }
+
+  function touchEditorialSync() {
+    setSyncMetadata((current) => ({
+      ...current,
+      editorialStateUpdatedAt: new Date().toISOString(),
       pendingPush: true,
       lastError: null
     }));
@@ -569,6 +586,7 @@ function App() {
         identity: syncIdentity,
         travelerState,
         tripSession,
+        editorialState,
         metadata: syncMetadata,
         enabled: syncEnabled
       });
@@ -581,6 +599,8 @@ function App() {
         setCompletedNodeIds(result.travelerState.completedNodeIds);
         setReportMap(result.travelerState.reportMap);
         setTripSession(result.tripSession);
+        setIngestionCandidates(result.editorialState.ingestionCandidates);
+        setPublishedSources(result.editorialState.publishedSources);
       }
 
       setSyncStatus(result.status);
@@ -688,6 +708,9 @@ function App() {
     try {
       const nextCandidates = await importGooglePlacesCandidates(importQuery, catalog, ingestionCandidates);
       setIngestionCandidates((current) => [...nextCandidates, ...current]);
+      if (nextCandidates.length > 0) {
+        touchEditorialSync();
+      }
 
       if (nextCandidates[0]) {
         setSelectedCandidateId(nextCandidates[0].id);
@@ -740,6 +763,7 @@ function App() {
         notes: candidateDraft?.editorialNotes
       })
     );
+    touchEditorialSync();
     setEditorMessage("Candidate kept in the review queue.");
   }
 
@@ -755,6 +779,7 @@ function App() {
         notes: candidateDraft?.editorialNotes
       })
     );
+    touchEditorialSync();
     setEditorMessage("Candidate rejected and kept out of the live catalog.");
   }
 
@@ -781,6 +806,7 @@ function App() {
           notes: candidateDraft.editorialNotes
         }).filter((candidate) => candidate.id !== selectedCandidate.id)
       );
+      touchEditorialSync();
       setSelectedNodeId(publication.published.nodeId);
       setEditorTab("published");
       setEditorMessage("Candidate approved and published into the vetted catalog.");
@@ -869,6 +895,9 @@ function App() {
             threshold unlocks, and confessional reviews that feed directly back into what the app will
             recommend next.
           </p>
+          <div className="notice notice--soft hero__notice">
+            Tokyo is the current dominance city. This loop gets hardened first for trust, polish, and progression.
+          </div>
         </div>
         <div className="signal-board">
           <div className="signal-board__label">Current envelope</div>
@@ -883,10 +912,27 @@ function App() {
               tone="rose"
             />
           </div>
+          <div className="pill-row shell-toggle">
+            <button
+              className={`pill ${shellMode === "explore" ? "pill--active" : ""}`}
+              type="button"
+              onClick={() => setShellMode("explore")}
+            >
+              Traveler shell
+            </button>
+            <button
+              className={`pill ${shellMode === "studio" ? "pill--active" : ""}`}
+              type="button"
+              onClick={() => setShellMode("studio")}
+            >
+              Editorial studio
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="layout layout--expanded">
+        {shellMode === "studio" && (
         <section className="panel controls-panel">
           <div className="panel__header">
             <span className="panel__eyebrow">Traveler profile</span>
@@ -1012,7 +1058,9 @@ function App() {
             </div>
           </div>
         </section>
+        )}
 
+        {shellMode === "studio" && (
         <section className="panel controls-panel">
           <div className="panel__header">
             <span className="panel__eyebrow">Live envelope</span>
@@ -1106,7 +1154,9 @@ function App() {
             onChange={(value) => setRisk((current) => ({ ...current, soloSafetyScore: value }))}
           />
         </section>
+        )}
 
+        {shellMode === "studio" && (
         <section className="panel editor-panel">
           <div className="panel__header">
             <span className="panel__eyebrow">Editorial console</span>
@@ -1574,6 +1624,7 @@ function App() {
             </div>
           )}
         </section>
+        )}
 
         <section className="panel trail-panel">
           <div className="panel__header">
@@ -1635,6 +1686,12 @@ function App() {
                 Exit route: {selectedExploreBranch.routePreview?.exitSummary ?? selectedExploreBranch.exitPlan}
               </div>
 
+              {selectedTrace && (
+                <div className="notice notice--soft">
+                  Why now: {selectedTrace.reasons.join(" · ")}
+                </div>
+              )}
+
               <div className="drawer-actions">
                 <button className="ghost-button" type="button" onClick={() => markComplete(selectedExploreBranch)}>
                   Mark complete
@@ -1660,6 +1717,47 @@ function App() {
                 onComplete={markComplete}
                 onReview={openReview}
               />
+            ))}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel__header">
+            <span className="panel__eyebrow">Tokyo quest log</span>
+            <h2>Make progression visible, not implied.</h2>
+          </div>
+
+          <div className="published-list">
+            {trail.questLog.map((entry) => (
+              <article className="essential-card" key={entry.arcId}>
+                <strong>{entry.label}</strong>
+                <div className="sync-copy">
+                  {entry.redThread} · {entry.lane} · {entry.status}
+                </div>
+                <div className="sync-copy">{entry.nodeTitle ?? "No surfaced node yet"}</div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel__header">
+            <span className="panel__eyebrow">Recommendation audit</span>
+            <h2>Keep trust decisions inspectable.</h2>
+          </div>
+
+          <div className="published-list">
+            {trail.traces.map((trace) => (
+              <article className="essential-card" key={trace.id}>
+                <strong>
+                  {trace.arcId} · {trace.lane} · {trace.outcome}
+                </strong>
+                <div className="sync-copy">
+                  Freshness: {trace.freshness}
+                  {typeof trace.score === "number" ? ` · score ${trace.score}` : ""}
+                </div>
+                <div className="sync-copy">{trace.reasons.join(" · ")}</div>
+              </article>
             ))}
           </div>
         </section>

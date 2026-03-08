@@ -287,4 +287,65 @@ describe("EdgeWander trail engine", () => {
     expect(collectedNodeIds(trail)).not.toContain("berlin-friedrichshain-code-and-candle-salon");
     expect(trail.locationSource).toBe("cached");
   });
+
+  it("marks stale source nodes in audits and keeps recommendation traces inspectable", () => {
+    const staleCatalog = seedExperiences.map((node) =>
+      node.id === "tokyo-jimbocho-occult-stack"
+        ? {
+            ...node,
+            sourceType: "google-places" as const,
+            sourceId: "google_tokyo_occult_stack",
+            sourceUpdatedAt: "2025-01-01T00:00:00.000Z"
+          }
+        : node
+    );
+
+    const trail = buildTrailResult({
+      profile: baseProfile({ appetite: 84 }),
+      risk: baseRisk(),
+      experienceCatalog: staleCatalog,
+      locationContext: resolveLocationContext({
+        destination: "Tokyo",
+        cachedLocation: { lat: 35.6959, lng: 139.7576 }
+      })
+    });
+
+    expect(trail.audits.find((audit) => audit.nodeId === "tokyo-jimbocho-occult-stack")?.freshness).toBe(
+      "stale"
+    );
+    expect(trail.traces.some((trace) => trace.reasons.length > 0)).toBe(true);
+  });
+
+  it("builds a persistent quest log from current arcs and trip-session history", () => {
+    const [firstTokyoNode, secondTokyoNode] = seedExperiences.filter((node) => node.city === "Tokyo");
+
+    const trail = buildTrailResult({
+      profile: baseProfile(),
+      risk: baseRisk(),
+      locationContext: resolveLocationContext({
+        destination: "Tokyo",
+        cachedLocation: { lat: 35.6959, lng: 139.7576 }
+      }),
+      tripSession: {
+        city: "Tokyo",
+        tripStartDate: "2026-04-14",
+        activeTrailGeneratedAt: null,
+        visitedNodes: firstTokyoNode ? [firstTokyoNode.id] : [],
+        skippedNodes: secondTokyoNode ? [secondTokyoNode.id] : [],
+        quarantinedNodes: [],
+        confessionals: [],
+        lastKnownLocation: defaultMapRegions.Tokyo.center,
+        locationSource: "cached",
+        lastMapRegion: defaultMapRegions.Tokyo
+      }
+    });
+
+    expect(trail.questLog.length).toBeGreaterThanOrEqual(3);
+    expect(
+      trail.questLog.some((entry) => entry.nodeId === firstTokyoNode?.id && entry.status === "completed")
+    ).toBe(true);
+    expect(
+      trail.questLog.some((entry) => entry.nodeId === secondTokyoNode?.id && entry.status === "skipped")
+    ).toBe(true);
+  });
 });
