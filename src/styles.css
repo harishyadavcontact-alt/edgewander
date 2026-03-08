@@ -686,6 +686,34 @@ button {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.trust-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.82rem;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.trust-badge--fresh {
+  border-color: rgba(133, 198, 182, 0.35);
+  background: rgba(133, 198, 182, 0.14);
+}
+
+.trust-badge--steady {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.trust-badge--warn {
+  border-color: rgba(238, 138, 134, 0.35);
+  background: rgba(238, 138, 134, 0.12);
+  color: #ffd5d0;
+}
+
 .notice {
   margin-top: 12px;
   padding: 12px 13px;

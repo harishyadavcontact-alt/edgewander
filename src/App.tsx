@@ -1780,7 +1780,7 @@ function App() {
               <div className="branch__meta">
                 <span>{selectedExploreBranch.node.neighborhood}</span>
                 <span>{selectedExploreBranch.node.category}</span>
-                <span>{trustBadgeForNode(selectedExploreBranch.node)}</span>
+                <TrustBadge node={selectedExploreBranch.node} />
                 <span>{selectedExploreBranch.routePreview?.distanceKm ?? 0} km away</span>
               </div>
 
@@ -1833,7 +1833,7 @@ function App() {
           </div>
         </section>
 
-        <section className="panel">
+        {shellMode === "studio" && <section className="panel">
           <div className="panel__header">
             <span className="panel__eyebrow">Tokyo quest log</span>
             <h2>Make progression visible, not implied.</h2>
@@ -1850,7 +1850,7 @@ function App() {
               </article>
             ))}
           </div>
-        </section>
+        </section>}
 
         <section className="panel">
           <div className="panel__header">
@@ -2089,7 +2089,7 @@ function BranchCard(props: {
           <div className="branch__meta">
             <span>{node.area}</span>
             <span>{node.category}</span>
-            <span>{trustBadgeForNode(node)}</span>
+            <TrustBadge node={node} />
             <span>{"$".repeat(node.costBand)}</span>
           </div>
           <div className="branch__stats">
@@ -2140,6 +2140,18 @@ function BranchCard(props: {
 
 function StatusBadge(props: { status: BranchStatus }) {
   return <span className={`status status--${props.status}`}>{props.status}</span>;
+}
+
+function TrustBadge(props: { node: ExperienceNode }) {
+  const label = trustBadgeForNode(props.node);
+  const tone =
+    label === "Stale source"
+      ? "warn"
+      : label === "Freshly verified"
+        ? "fresh"
+        : "steady";
+
+  return <span className={`trust-badge trust-badge--${tone}`}>{label}</span>;
 }
 
 function SliderField(props: {
