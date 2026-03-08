@@ -17,6 +17,9 @@ export type CostBand = 1 | 2 | 3;
 export type BranchStatus = "available" | "locked" | "suppressed" | "fallback";
 export type TravelMode = "walk" | "transit" | "rideshare";
 export type LocationSource = "live" | "city-fallback" | "cached";
+export type SourceType = "editorial" | "google-places";
+export type VerificationStatus = "pending" | "matched" | "approved" | "rejected" | "stale";
+export type EditorialStatus = "draft" | "review" | "approved" | "rejected";
 
 export interface TravelerProfile {
   destination: Destination;
@@ -47,6 +50,23 @@ export interface Coordinates {
 export interface OperatingHours {
   openHour: number;
   closeHour: number;
+}
+
+export interface PlaceMetadata {
+  address?: string;
+  neighborhoodHint?: string;
+  phone?: string;
+  website?: string;
+  rating?: number;
+  userRatingsTotal?: number;
+  mapsUrl?: string;
+}
+
+export interface TrustSignals {
+  sourceConfidence: number;
+  freshnessConfidence: number;
+  locationConfidence: number;
+  operationalConfidence: number;
 }
 
 export interface ExperienceNode {
@@ -91,6 +111,15 @@ export interface ExperienceNode {
     minAppetite?: number;
     maxBudget?: CostBand;
   };
+  sourceType: SourceType;
+  sourceId?: string;
+  sourceUpdatedAt?: string;
+  verificationStatus: VerificationStatus;
+  editorialStatus: EditorialStatus;
+  lastReviewedAt?: string;
+  editorialNotes?: string;
+  trustSignals: TrustSignals;
+  placeMetadata?: PlaceMetadata;
 }
 
 export interface QuestBranch {
@@ -176,6 +205,56 @@ export interface ExperienceCatalog {
   experiences: ExperienceNode[];
 }
 
+export interface IngestionQuery {
+  city: Destination;
+  query: string;
+}
+
+export interface CandidateMatch {
+  nodeId: string;
+  title: string;
+  score: number;
+  reason: string;
+}
+
+export interface IngestionCandidate {
+  id: string;
+  city: Destination;
+  query: string;
+  sourceType: "google-places";
+  sourceId: string;
+  title: string;
+  category: string;
+  neighborhood: string;
+  lat: number;
+  lng: number;
+  areaRadius: number;
+  sourceUpdatedAt: string;
+  verificationStatus: VerificationStatus;
+  editorialStatus: Exclude<EditorialStatus, "approved">;
+  trustSignals: TrustSignals;
+  placeMetadata?: PlaceMetadata;
+  matchedNodeId?: string;
+  matches: CandidateMatch[];
+  editorialNotes?: string;
+  importedAt: string;
+  lastReviewedAt?: string;
+}
+
+export interface CandidateReviewDecision {
+  candidateId: string;
+  action: "approve" | "reject" | "hold" | "merge";
+  targetNodeId?: string;
+  notes?: string;
+}
+
+export interface PublishedSourceRecord {
+  nodeId: string;
+  sourceType: "google-places";
+  sourceId: string;
+  publishedAt: string;
+}
+
 export interface RoutePreview {
   distanceKm: number;
   etaMinutes: number;
@@ -217,3 +296,39 @@ export interface TripSession {
   locationSource: LocationSource;
   lastMapRegion: MapRegionCache;
 }
+
+export interface TravelerState {
+  profile: TravelerProfile;
+  completedNodeIds: string[];
+  reportMap: Record<string, VisitReport[]>;
+}
+
+export interface SyncIdentity {
+  travelerId: string;
+  mode: "anonymous";
+  createdAt: string;
+}
+
+export interface SyncMetadata {
+  travelerStateUpdatedAt: string | null;
+  tripSessionUpdatedAt: string | null;
+  lastSyncedAt: string | null;
+  pendingPush: boolean;
+  lastError: string | null;
+}
+
+export interface RemoteTravelerProfileRecord {
+  traveler_id: string;
+  payload_json: TravelerState;
+  updated_at: string;
+}
+
+export interface RemoteTripSessionRecord {
+  traveler_id: string;
+  city: Destination;
+  trip_start_date: string;
+  payload_json: TripSession;
+  updated_at: string;
+}
+
+export type SyncStatus = "idle" | "syncing" | "offline" | "error" | "synced";

@@ -2,9 +2,14 @@ import type {
   Coordinates,
   EmergencyAnchor,
   ExperienceNode,
+  IngestionCandidate,
   MapRegionCache,
+  PublishedSourceRecord,
+  SyncIdentity,
+  SyncMetadata,
   TrailCache,
   TravelerProfile,
+  TravelerState,
   TripSession,
   VisitReport
 } from "../types";
@@ -18,7 +23,11 @@ const keys = {
   tripSession: "edgewander.trip-session",
   mapRegion: "edgewander.map-region",
   emergencyAnchors: "edgewander.emergency-anchors",
-  lastLocation: "edgewander.last-location"
+  lastLocation: "edgewander.last-location",
+  syncIdentity: "edgewander.sync-identity",
+  syncMetadata: "edgewander.sync-metadata",
+  ingestionCandidates: "edgewander.ingestion-candidates",
+  publishedSources: "edgewander.published-sources"
 };
 
 function safeRead<T>(key: string, fallback: T) {
@@ -116,4 +125,48 @@ export function loadLastLocation() {
 
 export function saveLastLocation(location: Coordinates | null) {
   safeWrite(keys.lastLocation, location);
+}
+
+export function loadSyncIdentity() {
+  return safeRead<SyncIdentity | null>(keys.syncIdentity, null);
+}
+
+export function saveSyncIdentity(identity: SyncIdentity) {
+  safeWrite(keys.syncIdentity, identity);
+}
+
+export function loadSyncMetadata(fallback: SyncMetadata) {
+  return safeRead(keys.syncMetadata, fallback);
+}
+
+export function saveSyncMetadata(metadata: SyncMetadata) {
+  safeWrite(keys.syncMetadata, metadata);
+}
+
+export function buildTravelerState(
+  profile: TravelerProfile,
+  completedNodeIds: string[],
+  reportMap: Record<string, VisitReport[]>
+): TravelerState {
+  return {
+    profile,
+    completedNodeIds,
+    reportMap
+  };
+}
+
+export function loadIngestionCandidates() {
+  return safeRead<IngestionCandidate[]>(keys.ingestionCandidates, []);
+}
+
+export function saveIngestionCandidates(candidates: IngestionCandidate[]) {
+  safeWrite(keys.ingestionCandidates, candidates);
+}
+
+export function loadPublishedSources() {
+  return safeRead<PublishedSourceRecord[]>(keys.publishedSources, []);
+}
+
+export function savePublishedSources(records: PublishedSourceRecord[]) {
+  safeWrite(keys.publishedSources, records);
 }

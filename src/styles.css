@@ -322,6 +322,65 @@ button {
   font-family: "Space Grotesk", "Segoe UI", sans-serif;
 }
 
+.sync-panel {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.sync-copy {
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.editor-tabs {
+  margin-bottom: 16px;
+}
+
+.candidate-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 10px;
+}
+
+.candidate-item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  text-align: left;
+}
+
+.candidate-item span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.candidate-item--active {
+  border-color: rgba(242, 187, 107, 0.4);
+  background: rgba(242, 187, 107, 0.08);
+}
+
+.candidate-review,
+.published-list {
+  display: grid;
+  gap: 14px;
+}
+
+.field--action {
+  align-content: end;
+}
+
 .ghost-button--danger {
   border-color: rgba(238, 138, 134, 0.4);
   color: var(--rose);
@@ -348,6 +407,13 @@ button {
 .ghost-button:hover,
 .primary-button:hover {
   transform: translateY(-1px);
+}
+
+.ghost-button:disabled,
+.primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
 }
 
 .pill--active,
@@ -729,8 +795,17 @@ button {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .sync-panel {
+    align-items: center;
+  }
+
   .branch-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .candidate-layout {
+    grid-template-columns: minmax(240px, 0.75fr) minmax(0, 1.25fr);
+    align-items: start;
   }
 
   .review-grid {

@@ -1,29 +1,51 @@
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { MapExplorer } from "./components/MapExplorer";
 import { allInterests } from "./data/experiences";
 import { buildNodeId, cloneSeedCatalog, defaultExperienceDraft, validateCatalog } from "./lib/catalog";
 import { buildTrailResult, createTrailCache, summarizeReports } from "./lib/engine";
+import {
+  applyCandidateDecision,
+  canPublishCandidate,
+  candidateDraftFromSource,
+  importGooglePlacesCandidates,
+  publishCandidateToCatalog,
+  trustBadgeForNode
+} from "./lib/ingestion";
 import { defaultMapRegions, emergencyAnchorsByCity, resolveLocationContext } from "./lib/spatial";
 import {
+  buildTravelerState,
   loadCompletedNodeIds,
   loadEmergencyAnchors,
   loadExperienceCatalog,
+  loadIngestionCandidates,
   loadLastLocation,
   loadMapRegion,
   loadProfile,
+  loadPublishedSources,
   loadReportMap,
+  loadSyncIdentity,
+  loadSyncMetadata,
   loadTrailCache,
   loadTripSession,
   saveCompletedNodeIds,
   saveEmergencyAnchors,
   saveExperienceCatalog,
+  saveIngestionCandidates,
   saveLastLocation,
   saveMapRegion,
   saveProfile,
+  savePublishedSources,
   saveReportMap,
+  saveSyncIdentity,
+  saveSyncMetadata,
   saveTrailCache,
   saveTripSession
 } from "./lib/storage";
+import {
+  defaultSyncMetadata,
+  isSyncConfigured,
+  syncEdgeWanderState
+} from "./lib/sync";
 import type {
   BranchStatus,
   Coordinates,
@@ -31,12 +53,17 @@ import type {
   Destination,
   EmergencyAnchor,
   ExperienceNode,
+  IngestionCandidate,
   InterestTag,
   MapRegionCache,
   NoGo,
+  PublishedSourceRecord,
   QuestArc,
   QuestBranch,
   RiskEnvelope,
+  SyncIdentity,
+  SyncMetadata,
+  SyncStatus,
   TimeOfDay,
   TravelerProfile,
   TripSession,
@@ -119,7 +146,23 @@ function defaultTripSession(
   };
 }
 
+function formatSyncTime(value: string | null) {
+  if (!value) {
+    return "Not synced yet";
+  }
+
+  return new Date(value).toLocaleString();
+}
+
+function defaultImportQuery(destination: Destination) {
+  return {
+    city: destination,
+    query: ""
+  };
+}
+
 function App() {
+  const syncEnabled = isSyncConfigured();
   const initialCatalog = loadExperienceCatalog(cloneSeedCatalog());
   const initialProfile = loadProfile(defaultProfile);
   const initialReports = loadReportMap();
@@ -130,6 +173,10 @@ function App() {
   const initialTripSession = loadTripSession(
     defaultTripSession(initialProfile.destination, initialProfile.tripStart, initialMapRegion)
   );
+  const initialSyncIdentity = loadSyncIdentity();
+  const initialSyncMetadata = loadSyncMetadata(defaultSyncMetadata());
+  const initialCandidates = loadIngestionCandidates();
+  const initialPublishedSources = loadPublishedSources();
   const initialEmergencyAnchors = loadEmergencyAnchors(
     emergencyAnchorsByCity[initialProfile.destination]
   );
@@ -153,6 +200,24 @@ function App() {
   const [liveLocation, setLiveLocation] = useState<Coordinates | undefined>(undefined);
   const [mapRegion, setMapRegion] = useState<MapRegionCache>(initialMapRegion);
   const [tripSession, setTripSession] = useState<TripSession>(initialTripSession);
+  const [syncIdentity, setSyncIdentity] = useState<SyncIdentity | null>(initialSyncIdentity);
+  const [syncMetadata, setSyncMetadata] = useState<SyncMetadata>(initialSyncMetadata);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(
+    defaultRisk.connectivity === "offline" ? "offline" : "idle"
+  );
+  const [editorTab, setEditorTab] = useState<"catalog" | "candidates" | "published">("catalog");
+  const [ingestionCandidates, setIngestionCandidates] =
+    useState<IngestionCandidate[]>(initialCandidates);
+  const [publishedSources, setPublishedSources] =
+    useState<PublishedSourceRecord[]>(initialPublishedSources);
+  const [importQuery, setImportQuery] = useState(defaultImportQuery(initialProfile.destination));
+  const [importing, setImporting] = useState(false);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(
+    initialCandidates[0]?.id ?? null
+  );
+  const [candidateDraft, setCandidateDraft] = useState(() =>
+    initialCandidates[0] ? candidateDraftFromSource(initialCandidates[0]) : null
+  );
   const [cachedEmergencyAnchors, setCachedEmergencyAnchors] =
     useState<EmergencyAnchor[]>(initialEmergencyAnchors);
   const [trail, setTrail] = useState(() =>
@@ -169,7 +234,9 @@ function App() {
     })
   );
   const [isPending, startTransition] = useTransition();
+  const syncInFlightRef = useRef(false);
   const nodeTitles = Object.fromEntries(catalog.map((node) => [node.id, node.title]));
+  const travelerState = buildTravelerState(profile, completedNodeIds, reportMap);
 
   useEffect(() => {
     saveProfile(profile);
@@ -188,8 +255,26 @@ function App() {
   }, [catalog]);
 
   useEffect(() => {
+    saveIngestionCandidates(ingestionCandidates);
+  }, [ingestionCandidates]);
+
+  useEffect(() => {
+    savePublishedSources(publishedSources);
+  }, [publishedSources]);
+
+  useEffect(() => {
     saveTripSession(tripSession);
   }, [tripSession]);
+
+  useEffect(() => {
+    if (syncIdentity) {
+      saveSyncIdentity(syncIdentity);
+    }
+  }, [syncIdentity]);
+
+  useEffect(() => {
+    saveSyncMetadata(syncMetadata);
+  }, [syncMetadata]);
 
   useEffect(() => {
     saveMapRegion(mapRegion);
@@ -210,18 +295,27 @@ function App() {
   }, [catalog, selectedNodeId]);
 
   useEffect(() => {
+    if (!ingestionCandidates.some((candidate) => candidate.id === selectedCandidateId)) {
+      const nextCandidate = ingestionCandidates[0] ?? null;
+      setSelectedCandidateId(nextCandidate?.id ?? null);
+      setCandidateDraft(nextCandidate ? candidateDraftFromSource(nextCandidate) : null);
+    }
+  }, [ingestionCandidates, selectedCandidateId]);
+
+  useEffect(() => {
     const nextRegion = defaultMapRegions[profile.destination];
     setMapRegion((current) =>
       current.center.lat === nextRegion.center.lat && current.center.lng === nextRegion.center.lng
         ? current
         : nextRegion
     );
-    setTripSession((current) =>
+    updateTripSession((current) =>
       current.city === profile.destination
         ? current
         : defaultTripSession(profile.destination, profile.tripStart, nextRegion)
     );
     setCachedEmergencyAnchors(emergencyAnchorsByCity[profile.destination]);
+    setImportQuery((current) => ({ ...current, city: profile.destination }));
   }, [profile.destination, profile.tripStart]);
 
   useEffect(() => {
@@ -262,16 +356,77 @@ function App() {
 
   useEffect(() => {
     setCachedEmergencyAnchors(trail.emergencyAnchors);
-    setTripSession((current) => ({
-      ...current,
-      city: profile.destination,
-      tripStartDate: profile.tripStart,
-      activeTrailGeneratedAt: trail.generatedAt,
-      lastKnownLocation: trail.effectiveLocation,
-      locationSource: trail.locationSource,
-      lastMapRegion: trail.mapRegion
-    }));
+    let changed = false;
+    setTripSession((current) => {
+      const nextSession = {
+        ...current,
+        city: profile.destination,
+        tripStartDate: profile.tripStart,
+        activeTrailGeneratedAt: trail.generatedAt,
+        lastKnownLocation: trail.effectiveLocation,
+        locationSource: trail.locationSource,
+        lastMapRegion: trail.mapRegion
+      };
+
+      if (JSON.stringify(current) === JSON.stringify(nextSession)) {
+        return current;
+      }
+
+      changed = true;
+      return nextSession;
+    });
+
+    if (changed) {
+      touchTripSync();
+    }
   }, [trail, profile.destination, profile.tripStart]);
+
+  useEffect(() => {
+    if (!syncEnabled) {
+      setSyncStatus("idle");
+      return;
+    }
+
+    if (risk.connectivity === "offline") {
+      setSyncStatus("offline");
+      return;
+    }
+
+    const stale =
+      !syncMetadata.lastSyncedAt ||
+      Date.now() - new Date(syncMetadata.lastSyncedAt).getTime() > 60000;
+    if (syncMetadata.pendingPush || stale) {
+      void runSync(syncMetadata.lastSyncedAt ? "change" : "boot");
+    }
+  }, [
+    syncEnabled,
+    risk.connectivity,
+    syncMetadata.pendingPush,
+    syncMetadata.lastSyncedAt,
+    travelerState,
+    tripSession
+  ]);
+
+  useEffect(() => {
+    if (!syncEnabled || typeof window === "undefined") {
+      return;
+    }
+
+    const handleOnline = () => void runSync("retry");
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void runSync("resume");
+      }
+    };
+
+    window.addEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [syncEnabled, travelerState, tripSession, syncMetadata, syncIdentity, risk.connectivity]);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -324,9 +479,125 @@ function App() {
     mapBranches.find((branch) => branch.node?.id === selectedExploreNodeId) ??
     mapBranches.find((branch) => branch.node) ??
     null;
+  const selectedCandidate =
+    ingestionCandidates.find((candidate) => candidate.id === selectedCandidateId) ??
+    ingestionCandidates[0] ??
+    null;
+
+  function touchTravelerSync() {
+    setSyncMetadata((current) => ({
+      ...current,
+      travelerStateUpdatedAt: new Date().toISOString(),
+      pendingPush: true,
+      lastError: null
+    }));
+  }
+
+  function touchTripSync() {
+    setSyncMetadata((current) => ({
+      ...current,
+      tripSessionUpdatedAt: new Date().toISOString(),
+      pendingPush: true,
+      lastError: null
+    }));
+  }
+
+  function updateProfile(updater: TravelerProfile | ((current: TravelerProfile) => TravelerProfile)) {
+    setProfile((current) =>
+      typeof updater === "function"
+        ? (updater as (current: TravelerProfile) => TravelerProfile)(current)
+        : updater
+    );
+    touchTravelerSync();
+  }
+
+  function updateCompletedIds(updater: string[] | ((current: string[]) => string[])) {
+    setCompletedNodeIds((current) =>
+      typeof updater === "function"
+        ? (updater as (current: string[]) => string[])(current)
+        : updater
+    );
+    touchTravelerSync();
+  }
+
+  function updateReportState(
+    updater:
+      | Record<string, VisitReport[]>
+      | ((current: Record<string, VisitReport[]>) => Record<string, VisitReport[]>)
+  ) {
+    setReportMap((current) =>
+      typeof updater === "function"
+        ? (updater as (current: Record<string, VisitReport[]>) => Record<string, VisitReport[]>)(current)
+        : updater
+    );
+    touchTravelerSync();
+  }
+
+  function updateTripSession(updater: TripSession | ((current: TripSession) => TripSession)) {
+    setTripSession((current) =>
+      typeof updater === "function"
+        ? (updater as (current: TripSession) => TripSession)(current)
+        : updater
+    );
+    touchTripSync();
+  }
+
+  async function runSync(reason: "boot" | "change" | "retry" | "resume" = "change") {
+    if (!syncEnabled) {
+      setSyncStatus("idle");
+      return;
+    }
+
+    if (risk.connectivity === "offline" || (typeof navigator !== "undefined" && !navigator.onLine)) {
+      setSyncStatus("offline");
+      setSyncMetadata((current) => ({
+        ...current,
+        pendingPush: reason === "boot" ? current.pendingPush : true
+      }));
+      return;
+    }
+
+    if (syncInFlightRef.current) {
+      return;
+    }
+
+    syncInFlightRef.current = true;
+    setSyncStatus("syncing");
+
+    try {
+      const result = await syncEdgeWanderState({
+        identity: syncIdentity,
+        travelerState,
+        tripSession,
+        metadata: syncMetadata,
+        enabled: syncEnabled
+      });
+
+      setSyncIdentity(result.identity);
+      setSyncMetadata(result.metadata);
+
+      if (result.mergedRemote) {
+        setProfile(result.travelerState.profile);
+        setCompletedNodeIds(result.travelerState.completedNodeIds);
+        setReportMap(result.travelerState.reportMap);
+        setTripSession(result.tripSession);
+      }
+
+      setSyncStatus(result.status);
+    } catch (error) {
+      setSyncStatus("error");
+      setSyncMetadata((current) => ({
+        ...current,
+        pendingPush: true,
+        lastError: error instanceof Error ? error.message : "Cloud sync failed."
+      }));
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }
 
   function toggleInterest(tag: InterestTag) {
-    setProfile((current) => ({
+    updateProfile((current) => ({
       ...current,
       interestTags: current.interestTags.includes(tag)
         ? current.interestTags.filter((entry) => entry !== tag)
@@ -335,7 +606,7 @@ function App() {
   }
 
   function toggleNoGo(tag: NoGo) {
-    setProfile((current) => ({
+    updateProfile((current) => ({
       ...current,
       noGos: current.noGos.includes(tag)
         ? current.noGos.filter((entry) => entry !== tag)
@@ -348,8 +619,8 @@ function App() {
       return;
     }
 
-    setCompletedNodeIds((current) => Array.from(new Set([...current, branch.node!.id])));
-    setTripSession((current) => ({
+    updateCompletedIds((current) => Array.from(new Set([...current, branch.node!.id])));
+    updateTripSession((current) => ({
       ...current,
       visitedNodes: Array.from(new Set([...current.visitedNodes, branch.node!.id])),
       skippedNodes: current.skippedNodes.filter((id) => id !== branch.node!.id)
@@ -382,12 +653,12 @@ function App() {
       createdAt: new Date().toISOString()
     };
 
-    setReportMap((current) => ({
+    updateReportState((current) => ({
       ...current,
       [activeReviewNodeId]: [...(current[activeReviewNodeId] ?? []), nextReport]
     }));
-    setCompletedNodeIds((current) => Array.from(new Set([...current, activeReviewNodeId])));
-    setTripSession((current) => ({
+    updateCompletedIds((current) => Array.from(new Set([...current, activeReviewNodeId])));
+    updateTripSession((current) => ({
       ...current,
       visitedNodes: Array.from(new Set([...current.visitedNodes, activeReviewNodeId])),
       confessionals: [...current.confessionals, `${activeReviewNodeId}:${nextReport.createdAt}`],
@@ -405,10 +676,117 @@ function App() {
       return;
     }
 
-    setTripSession((current) => ({
+    updateTripSession((current) => ({
       ...current,
       skippedNodes: Array.from(new Set([...current.skippedNodes, selectedExploreBranch.node!.id]))
     }));
+  }
+
+  async function importCandidates() {
+    setImporting(true);
+
+    try {
+      const nextCandidates = await importGooglePlacesCandidates(importQuery, catalog, ingestionCandidates);
+      setIngestionCandidates((current) => [...nextCandidates, ...current]);
+
+      if (nextCandidates[0]) {
+        setSelectedCandidateId(nextCandidates[0].id);
+        setCandidateDraft(candidateDraftFromSource(nextCandidates[0]));
+      }
+
+      setEditorMessage(
+        nextCandidates.length > 0
+          ? `Imported ${nextCandidates.length} Google Places candidates into review.`
+          : "No new candidates found for that query."
+      );
+    } catch (error) {
+      setEditorMessage(error instanceof Error ? error.message : "Candidate import failed.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function selectCandidate(candidateId: string) {
+    const candidate = ingestionCandidates.find((entry) => entry.id === candidateId) ?? null;
+    setSelectedCandidateId(candidateId);
+    setCandidateDraft(candidate ? candidateDraftFromSource(candidate) : null);
+  }
+
+  function updateCandidateDraft(
+    updater:
+      | NonNullable<typeof candidateDraft>
+      | ((current: NonNullable<typeof candidateDraft>) => NonNullable<typeof candidateDraft>)
+  ) {
+    setCandidateDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return typeof updater === "function"
+        ? (updater as (current: NonNullable<typeof candidateDraft>) => NonNullable<typeof candidateDraft>)(current)
+        : updater;
+    });
+  }
+
+  function holdCandidate() {
+    if (!selectedCandidate) {
+      return;
+    }
+
+    setIngestionCandidates((current) =>
+      applyCandidateDecision(current, {
+        candidateId: selectedCandidate.id,
+        action: "hold",
+        notes: candidateDraft?.editorialNotes
+      })
+    );
+    setEditorMessage("Candidate kept in the review queue.");
+  }
+
+  function rejectCandidate() {
+    if (!selectedCandidate) {
+      return;
+    }
+
+    setIngestionCandidates((current) =>
+      applyCandidateDecision(current, {
+        candidateId: selectedCandidate.id,
+        action: "reject",
+        notes: candidateDraft?.editorialNotes
+      })
+    );
+    setEditorMessage("Candidate rejected and kept out of the live catalog.");
+  }
+
+  function approveCandidate() {
+    if (!selectedCandidate || !candidateDraft) {
+      return;
+    }
+
+    try {
+      const publication = publishCandidateToCatalog({
+        candidate: selectedCandidate,
+        draft: candidateDraft,
+        catalog,
+        targetNodeId: selectedCandidate.matchedNodeId
+      });
+
+      setCatalog(publication.nextCatalog);
+      setPublishedSources((current) => [publication.published, ...current]);
+      setIngestionCandidates((current) =>
+        applyCandidateDecision(current, {
+          candidateId: selectedCandidate.id,
+          action: selectedCandidate.matchedNodeId ? "merge" : "approve",
+          targetNodeId: publication.published.nodeId,
+          notes: candidateDraft.editorialNotes
+        }).filter((candidate) => candidate.id !== selectedCandidate.id)
+      );
+      setSelectedNodeId(publication.published.nodeId);
+      setEditorTab("published");
+      setEditorMessage("Candidate approved and published into the vetted catalog.");
+    } catch (error) {
+      setEditorMessage(error instanceof Error ? error.message : "Candidate publish failed.");
+    }
   }
 
   function replaceSelectedNode(patch: Partial<ExperienceNode>) {
@@ -499,7 +877,11 @@ function App() {
             <SignalStat label="Red Thread" value={trail.redThread} tone="gold" />
             <SignalStat label="Destination" value={profile.destination} tone="teal" />
             <SignalStat label="Envelope floor" value={`${envelopeFloor}/100`} tone="smoke" />
-            <SignalStat label="Catalog" value={`${catalog.length} curated nodes`} tone="rose" />
+            <SignalStat
+              label="Cloud save"
+              value={!syncEnabled ? "disabled" : syncStatus}
+              tone="rose"
+            />
           </div>
         </div>
       </header>
@@ -517,7 +899,7 @@ function App() {
               <select
                 value={profile.destination}
                 onChange={(event) =>
-                  setProfile((current) => ({
+                  updateProfile((current) => ({
                     ...current,
                     destination: event.target.value as TravelerProfile["destination"]
                   }))
@@ -535,7 +917,7 @@ function App() {
                 type="date"
                 value={profile.tripStart}
                 onChange={(event) =>
-                  setProfile((current) => ({ ...current, tripStart: event.target.value }))
+                  updateProfile((current) => ({ ...current, tripStart: event.target.value }))
                 }
               />
             </label>
@@ -546,7 +928,7 @@ function App() {
                 type="date"
                 value={profile.tripEnd}
                 onChange={(event) =>
-                  setProfile((current) => ({ ...current, tripEnd: event.target.value }))
+                  updateProfile((current) => ({ ...current, tripEnd: event.target.value }))
                 }
               />
             </label>
@@ -565,7 +947,7 @@ function App() {
                   className={`pill ${profile.budgetBand === value ? "pill--active" : ""}`}
                   type="button"
                   onClick={() =>
-                    setProfile((current) => ({
+                    updateProfile((current) => ({
                       ...current,
                       budgetBand: value as TravelerProfile["budgetBand"]
                     }))
@@ -585,7 +967,7 @@ function App() {
               max="100"
               value={profile.appetite}
               onChange={(event) =>
-                setProfile((current) => ({
+                updateProfile((current) => ({
                   ...current,
                   appetite: Number(event.target.value)
                 }))
@@ -731,145 +1113,466 @@ function App() {
             <h2>Curate the weird map without touching code.</h2>
           </div>
 
-          <div className="editor-toolbar">
-            <button className="ghost-button" type="button" onClick={addNode}>
-              New node
+          <div className="notice notice--soft sync-panel">
+            <div>
+              <strong>Cloud save {syncEnabled ? "enabled" : "inactive"}</strong>
+              <div className="sync-copy">
+                {syncEnabled
+                  ? `Status: ${syncStatus}. Last sync: ${formatSyncTime(syncMetadata.lastSyncedAt)}.`
+                  : "Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to turn on private cloud sync."}
+              </div>
+              {syncMetadata.lastError && <div className="sync-copy">Last error: {syncMetadata.lastError}</div>}
+            </div>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => void runSync("retry")}
+              disabled={!syncEnabled || syncStatus === "syncing"}
+            >
+              Retry sync
             </button>
-            <button className="ghost-button" type="button" onClick={loadCatalogIntoEditor}>
-              Load JSON
-            </button>
-            <button className="ghost-button" type="button" onClick={exportCatalog}>
-              Export JSON
-            </button>
-            <button className="ghost-button" type="button" onClick={resetCatalog}>
-              Reset seeds
-            </button>
+          </div>
+
+          <div className="pill-row editor-tabs">
+            {[
+              ["catalog", "Catalog"],
+              ["candidates", `Candidates (${ingestionCandidates.length})`],
+              ["published", `Published (${publishedSources.length})`]
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                className={`pill ${editorTab === value ? "pill--active" : ""}`}
+                type="button"
+                onClick={() => setEditorTab(value as typeof editorTab)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           {editorMessage && <div className="banner banner--quiet">{editorMessage}</div>}
 
-          <div className="field-grid field-grid--tight">
-            <label className="field">
-              <span>Selected node</span>
-              <select value={selectedNodeId} onChange={(event) => setSelectedNodeId(event.target.value)}>
-                {catalog.map((node) => (
-                  <option key={node.id} value={node.id}>
-                    {node.city}: {node.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="field">
-              <span>Title</span>
-              <input
-                type="text"
-                value={selectedNode.title}
-                onChange={(event) => replaceSelectedNode({ title: event.target.value })}
-              />
-            </label>
-
-            <label className="field">
-              <span>City</span>
-              <select
-                value={selectedNode.city}
-                onChange={(event) =>
-                  replaceSelectedNode({ city: event.target.value as Destination })
-                }
-              >
-                <option>Tokyo</option>
-                <option>Berlin</option>
-                <option>New Orleans</option>
-              </select>
-            </label>
-          </div>
-
-          <label className="field">
-            <span>Narrative hook</span>
-            <textarea
-              rows={3}
-              value={selectedNode.narrativeHook}
-              onChange={(event) => replaceSelectedNode({ narrativeHook: event.target.value })}
-            />
-          </label>
-
-          <div className="field">
-            <span>Interest tags</span>
-            <div className="tag-grid">
-              {allInterests.map((tag) => (
-                <button
-                  key={tag}
-                  className={`tag ${selectedNode.interestTags.includes(tag) ? "tag--active" : ""}`}
-                  type="button"
-                  onClick={() =>
-                    replaceSelectedNode({
-                      interestTags: selectedNode.interestTags.includes(tag)
-                        ? selectedNode.interestTags.filter((entry) => entry !== tag)
-                        : [...selectedNode.interestTags, tag]
-                    })
-                  }
-                >
-                  {interestLabels[tag]}
+          {editorTab === "catalog" && (
+            <>
+              <div className="editor-toolbar">
+                <button className="ghost-button" type="button" onClick={addNode}>
+                  New node
                 </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="field">
-            <span>Operating windows</span>
-            <div className="tag-grid">
-              {(Object.keys(timeLabels) as TimeOfDay[]).map((slot) => (
-                <button
-                  key={slot}
-                  className={`tag ${selectedNode.operatingWindows.includes(slot) ? "tag--active" : ""}`}
-                  type="button"
-                  onClick={() =>
-                    replaceSelectedNode({
-                      operatingWindows: selectedNode.operatingWindows.includes(slot)
-                        ? selectedNode.operatingWindows.filter((entry) => entry !== slot)
-                        : [...selectedNode.operatingWindows, slot]
-                    })
-                  }
-                >
-                  {timeLabels[slot]}
+                <button className="ghost-button" type="button" onClick={loadCatalogIntoEditor}>
+                  Load JSON
                 </button>
-              ))}
+                <button className="ghost-button" type="button" onClick={exportCatalog}>
+                  Export JSON
+                </button>
+                <button className="ghost-button" type="button" onClick={resetCatalog}>
+                  Reset seeds
+                </button>
+              </div>
+
+              <div className="field-grid field-grid--tight">
+                <label className="field">
+                  <span>Selected node</span>
+                  <select value={selectedNodeId} onChange={(event) => setSelectedNodeId(event.target.value)}>
+                    {catalog.map((node) => (
+                      <option key={node.id} value={node.id}>
+                        {node.city}: {node.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Title</span>
+                  <input
+                    type="text"
+                    value={selectedNode.title}
+                    onChange={(event) => replaceSelectedNode({ title: event.target.value })}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>City</span>
+                  <select
+                    value={selectedNode.city}
+                    onChange={(event) =>
+                      replaceSelectedNode({ city: event.target.value as Destination })
+                    }
+                  >
+                    <option>Tokyo</option>
+                    <option>Berlin</option>
+                    <option>New Orleans</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="notice notice--soft">
+                Source trust: <strong>{trustBadgeForNode(selectedNode)}</strong> · {selectedNode.sourceType}
+              </div>
+
+              <label className="field">
+                <span>Narrative hook</span>
+                <textarea
+                  rows={3}
+                  value={selectedNode.narrativeHook}
+                  onChange={(event) => replaceSelectedNode({ narrativeHook: event.target.value })}
+                />
+              </label>
+
+              <div className="field">
+                <span>Interest tags</span>
+                <div className="tag-grid">
+                  {allInterests.map((tag) => (
+                    <button
+                      key={tag}
+                      className={`tag ${selectedNode.interestTags.includes(tag) ? "tag--active" : ""}`}
+                      type="button"
+                      onClick={() =>
+                        replaceSelectedNode({
+                          interestTags: selectedNode.interestTags.includes(tag)
+                            ? selectedNode.interestTags.filter((entry) => entry !== tag)
+                            : [...selectedNode.interestTags, tag]
+                        })
+                      }
+                    >
+                      {interestLabels[tag]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="field">
+                <span>Operating windows</span>
+                <div className="tag-grid">
+                  {(Object.keys(timeLabels) as TimeOfDay[]).map((slot) => (
+                    <button
+                      key={slot}
+                      className={`tag ${selectedNode.operatingWindows.includes(slot) ? "tag--active" : ""}`}
+                      type="button"
+                      onClick={() =>
+                        replaceSelectedNode({
+                          operatingWindows: selectedNode.operatingWindows.includes(slot)
+                            ? selectedNode.operatingWindows.filter((entry) => entry !== slot)
+                            : [...selectedNode.operatingWindows, slot]
+                        })
+                      }
+                    >
+                      {timeLabels[slot]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="field-grid field-grid--tight">
+                <NumberField
+                  label="Novelty"
+                  value={selectedNode.noveltyScore}
+                  onChange={(value) => replaceSelectedNode({ noveltyScore: value })}
+                />
+                <NumberField
+                  label="Edginess"
+                  value={selectedNode.edginess}
+                  onChange={(value) => replaceSelectedNode({ edginess: value })}
+                />
+                <NumberField
+                  label="Exit quality"
+                  value={selectedNode.transportExitQuality}
+                  onChange={(value) => replaceSelectedNode({ transportExitQuality: value })}
+                />
+              </div>
+
+              <label className="field">
+                <span>Catalog JSON editor</span>
+                <textarea
+                  rows={7}
+                  value={editorText}
+                  onChange={(event) => setEditorText(event.target.value)}
+                  placeholder="Load current catalog here, edit it, then apply JSON."
+                />
+              </label>
+
+              <div className="drawer-actions">
+                <button className="ghost-button" type="button" onClick={applyCatalogJson}>
+                  Apply JSON
+                </button>
+              </div>
+            </>
+          )}
+
+          {editorTab === "candidates" && (
+            <>
+              <div className="field-grid field-grid--tight">
+                <label className="field">
+                  <span>Import city</span>
+                  <select
+                    value={importQuery.city}
+                    onChange={(event) =>
+                      setImportQuery((current) => ({
+                        ...current,
+                        city: event.target.value as Destination
+                      }))
+                    }
+                  >
+                    <option>Tokyo</option>
+                    <option>Berlin</option>
+                    <option>New Orleans</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Google Places query</span>
+                  <input
+                    type="text"
+                    value={importQuery.query}
+                    onChange={(event) =>
+                      setImportQuery((current) => ({ ...current, query: event.target.value }))
+                    }
+                    placeholder="occult bookstore, rehearsal room, folklore museum"
+                  />
+                </label>
+                <div className="field field--action">
+                  <span>Queue import</span>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => void importCandidates()}
+                    disabled={importing}
+                  >
+                    {importing ? "Importing..." : "Import candidates"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="candidate-layout">
+                <div className="candidate-list">
+                  {ingestionCandidates.length === 0 && (
+                    <div className="notice notice--soft">
+                      No pending candidates yet. Import from Google Places to start the review queue.
+                    </div>
+                  )}
+
+                  {ingestionCandidates.map((candidate) => (
+                    <button
+                      key={candidate.id}
+                      className={`candidate-item ${selectedCandidateId === candidate.id ? "candidate-item--active" : ""}`}
+                      type="button"
+                      onClick={() => selectCandidate(candidate.id)}
+                    >
+                      <strong>{candidate.title}</strong>
+                      <span>{candidate.neighborhood}</span>
+                      <span>{candidate.verificationStatus}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {selectedCandidate && candidateDraft && (
+                  <div className="candidate-review">
+                    <div className="notice notice--soft">
+                      Verification: <strong>{selectedCandidate.verificationStatus}</strong> · Matches:{" "}
+                      {selectedCandidate.matches.length > 0
+                        ? selectedCandidate.matches
+                            .map((match) => `${match.title} (${match.score})`)
+                            .join(", ")
+                        : "none"}
+                    </div>
+
+                    <div className="field-grid field-grid--tight">
+                      <label className="field">
+                        <span>Publish title</span>
+                        <input
+                          type="text"
+                          value={candidateDraft.title}
+                          onChange={(event) =>
+                            updateCandidateDraft((current) => ({
+                              ...current,
+                              title: event.target.value
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Category</span>
+                        <input
+                          type="text"
+                          value={candidateDraft.category}
+                          onChange={(event) =>
+                            updateCandidateDraft((current) => ({
+                              ...current,
+                              category: event.target.value
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Lane bias</span>
+                        <select
+                          value={candidateDraft.laneBias}
+                          onChange={(event) =>
+                            updateCandidateDraft((current) => ({
+                              ...current,
+                              laneBias: event.target.value as ExperienceNode["laneBias"]
+                            }))
+                          }
+                        >
+                          <option value="guardian">guardian</option>
+                          <option value="balanced">balanced</option>
+                          <option value="expressive">expressive</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <label className="field">
+                      <span>Narrative hook</span>
+                      <textarea
+                        rows={3}
+                        value={candidateDraft.narrativeHook}
+                        onChange={(event) =>
+                          updateCandidateDraft((current) => ({
+                            ...current,
+                            narrativeHook: event.target.value
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <div className="field">
+                      <span>Theme tags</span>
+                      <input
+                        type="text"
+                        value={candidateDraft.themeTags.join(", ")}
+                        onChange={(event) =>
+                          updateCandidateDraft((current) => ({
+                            ...current,
+                            themeTags: event.target.value
+                              .split(",")
+                              .map((entry) => entry.trim())
+                              .filter(Boolean)
+                          }))
+                        }
+                        placeholder="Smoke, Ink, and Small Gods"
+                      />
+                    </div>
+
+                    <div className="field">
+                      <span>Interest tags</span>
+                      <div className="tag-grid">
+                        {allInterests.map((tag) => (
+                          <button
+                            key={tag}
+                            className={`tag ${candidateDraft.interestTags.includes(tag) ? "tag--active" : ""}`}
+                            type="button"
+                            onClick={() =>
+                              updateCandidateDraft((current) => ({
+                                ...current,
+                                interestTags: current.interestTags.includes(tag)
+                                  ? current.interestTags.filter((entry) => entry !== tag)
+                                  : [...current.interestTags, tag]
+                              }))
+                            }
+                          >
+                            {interestLabels[tag]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="field-grid field-grid--tight">
+                      <NumberField
+                        label="Legal confidence"
+                        value={candidateDraft.legalConfidence}
+                        onChange={(value) =>
+                          updateCandidateDraft((current) => ({ ...current, legalConfidence: value }))
+                        }
+                      />
+                      <NumberField
+                        label="Consent clarity"
+                        value={candidateDraft.consentClarity}
+                        onChange={(value) =>
+                          updateCandidateDraft((current) => ({ ...current, consentClarity: value }))
+                        }
+                      />
+                      <NumberField
+                        label="Edginess"
+                        value={candidateDraft.edginess}
+                        onChange={(value) =>
+                          updateCandidateDraft((current) => ({ ...current, edginess: value }))
+                        }
+                      />
+                    </div>
+
+                    <label className="field">
+                      <span>Exit options</span>
+                      <textarea
+                        rows={2}
+                        value={candidateDraft.exitOptions.join("\n")}
+                        onChange={(event) =>
+                          updateCandidateDraft((current) => ({
+                            ...current,
+                            exitOptions: event.target.value
+                              .split("\n")
+                              .map((entry) => entry.trim())
+                              .filter(Boolean)
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span>Editorial notes</span>
+                      <textarea
+                        rows={2}
+                        value={candidateDraft.editorialNotes ?? ""}
+                        onChange={(event) =>
+                          updateCandidateDraft((current) => ({
+                            ...current,
+                            editorialNotes: event.target.value
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <div className="drawer-actions">
+                      <button className="ghost-button" type="button" onClick={holdCandidate}>
+                        Hold
+                      </button>
+                      <button className="ghost-button ghost-button--danger" type="button" onClick={rejectCandidate}>
+                        Reject
+                      </button>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        onClick={approveCandidate}
+                        disabled={!canPublishCandidate(candidateDraft)}
+                      >
+                        {selectedCandidate.matchedNodeId ? "Merge + publish" : "Approve + publish"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {editorTab === "published" && (
+            <div className="published-list">
+              {publishedSources.length === 0 && (
+                <div className="notice notice--soft">No external-source publications yet.</div>
+              )}
+              {publishedSources.map((record) => {
+                const node = catalog.find((entry) => entry.id === record.nodeId);
+                return (
+                  <article className="essential-card" key={`${record.nodeId}-${record.sourceId}`}>
+                    <strong>{node?.title ?? record.nodeId}</strong>
+                    <div className="sync-copy">
+                      {record.sourceType} · {record.sourceId}
+                    </div>
+                    <div className="sync-copy">Published {formatSyncTime(record.publishedAt)}</div>
+                    <div className="sync-copy">
+                      Trust badge: {node ? trustBadgeForNode(node) : "Vetted"}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
-          </div>
-
-          <div className="field-grid field-grid--tight">
-            <NumberField
-              label="Novelty"
-              value={selectedNode.noveltyScore}
-              onChange={(value) => replaceSelectedNode({ noveltyScore: value })}
-            />
-            <NumberField
-              label="Edginess"
-              value={selectedNode.edginess}
-              onChange={(value) => replaceSelectedNode({ edginess: value })}
-            />
-            <NumberField
-              label="Exit quality"
-              value={selectedNode.transportExitQuality}
-              onChange={(value) => replaceSelectedNode({ transportExitQuality: value })}
-            />
-          </div>
-
-          <label className="field">
-            <span>Catalog JSON editor</span>
-            <textarea
-              rows={7}
-              value={editorText}
-              onChange={(event) => setEditorText(event.target.value)}
-              placeholder="Load current catalog here, edit it, then apply JSON."
-            />
-          </label>
-
-          <div className="drawer-actions">
-            <button className="ghost-button" type="button" onClick={applyCatalogJson}>
-              Apply JSON
-            </button>
-          </div>
+          )}
         </section>
 
         <section className="panel trail-panel">
@@ -918,6 +1621,7 @@ function App() {
               <div className="branch__meta">
                 <span>{selectedExploreBranch.node.neighborhood}</span>
                 <span>{selectedExploreBranch.node.category}</span>
+                <span>{trustBadgeForNode(selectedExploreBranch.node)}</span>
                 <span>{selectedExploreBranch.routePreview?.distanceKm ?? 0} km away</span>
               </div>
 
@@ -1170,6 +1874,7 @@ function BranchCard(props: {
           <div className="branch__meta">
             <span>{node.area}</span>
             <span>{node.category}</span>
+            <span>{trustBadgeForNode(node)}</span>
             <span>{"$".repeat(node.costBand)}</span>
           </div>
           <div className="branch__stats">

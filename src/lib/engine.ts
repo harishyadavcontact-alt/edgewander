@@ -313,6 +313,26 @@ function interestMatch(node: ExperienceNode, profile: TravelerProfile) {
   }, 0);
 }
 
+function provenanceTrustBoost(node: ExperienceNode) {
+  const freshnessPenalty =
+    node.sourceUpdatedAt &&
+    Date.now() - new Date(node.sourceUpdatedAt).getTime() > 1000 * 60 * 60 * 24 * 45
+      ? -6
+      : 0;
+
+  const trustSignalBoost =
+    (node.trustSignals.sourceConfidence +
+      node.trustSignals.freshnessConfidence +
+      node.trustSignals.locationConfidence +
+      node.trustSignals.operationalConfidence) *
+    4;
+
+  const verificationBoost =
+    node.verificationStatus === "approved" ? 6 : node.verificationStatus === "stale" ? -4 : 0;
+
+  return trustSignalBoost + freshnessPenalty + verificationBoost;
+}
+
 function guardianScore(
   node: ExperienceNode,
   profile: TravelerProfile,
@@ -328,6 +348,7 @@ function guardianScore(
   score += themeMatch(node, redThread, focus);
   score += interestMatch(node, profile);
   score += node.sourceTrustLevel * 28;
+  score += provenanceTrustBoost(node);
   score += node.soloSafetyScore * 0.25;
   score += node.transportExitQuality * 0.15;
   score -= node.edginess * 0.16;
@@ -354,6 +375,7 @@ function expressiveScore(
   score += interestMatch(node, profile);
   score += node.noveltyScore * 0.48;
   score += node.sourceTrustLevel * 18;
+  score += provenanceTrustBoost(node) * 0.75;
   score += profile.appetite * 0.22;
   score -= distancePenalty;
   score -= Math.max(node.costBand - budgetLimits[profile.budgetBand], 0) * 18;
@@ -371,6 +393,10 @@ function baseNodeFilter(
   summaries: Record<string, ReviewSummary>
 ) {
   if (node.city !== profile.destination) {
+    return false;
+  }
+
+  if (node.editorialStatus !== "approved" || node.verificationStatus === "rejected") {
     return false;
   }
 

@@ -43,7 +43,18 @@ export function defaultExperienceDraft(destination: Destination): ExperienceNode
     transitAccess: true,
     exitOptions: ["Pinned safe exit"],
     laneBias: "balanced",
-    crowdIntensity: 35
+    crowdIntensity: 35,
+    sourceType: "editorial",
+    verificationStatus: "approved",
+    editorialStatus: "approved",
+    lastReviewedAt: new Date().toISOString(),
+    editorialNotes: "Editorially created.",
+    trustSignals: {
+      sourceConfidence: 0.98,
+      freshnessConfidence: 0.82,
+      locationConfidence: 0.88,
+      operationalConfidence: 0.84
+    }
   };
 }
 
@@ -57,7 +68,9 @@ export function cloneSeedCatalog() {
     arrivalModes: [...node.arrivalModes],
     exitOptions: [...node.exitOptions],
     unlockAfter: node.unlockAfter ? [...node.unlockAfter] : undefined,
-    driftTriggers: node.driftTriggers ? { ...node.driftTriggers } : undefined
+    driftTriggers: node.driftTriggers ? { ...node.driftTriggers } : undefined,
+    trustSignals: { ...node.trustSignals },
+    placeMetadata: node.placeMetadata ? { ...node.placeMetadata } : undefined
   }));
 }
 
@@ -117,7 +130,28 @@ function validateNode(entry: unknown, index: number): ExperienceNode {
     alcoholForward: asOptionalBoolean(node.alcoholForward),
     crowdIntensity: asOptionalNumber(node.crowdIntensity),
     unlockAfter,
-    driftTriggers: node.driftTriggers ? asDriftTriggers(node.driftTriggers) : undefined
+    driftTriggers: node.driftTriggers ? asDriftTriggers(node.driftTriggers) : undefined,
+    sourceType: node.sourceType ? asSourceType(node.sourceType) : "editorial",
+    sourceId: asOptionalString(node.sourceId),
+    sourceUpdatedAt: asOptionalString(node.sourceUpdatedAt),
+    verificationStatus: node.verificationStatus
+      ? asVerificationStatus(node.verificationStatus)
+      : "approved",
+    editorialStatus: node.editorialStatus ? asEditorialStatus(node.editorialStatus) : "approved",
+    lastReviewedAt: asOptionalString(node.lastReviewedAt),
+    editorialNotes: asOptionalString(node.editorialNotes),
+    trustSignals: node.trustSignals
+      ? asTrustSignals(node.trustSignals)
+      : {
+          sourceConfidence: asNumber(node.sourceTrustLevel, "sourceTrustLevel"),
+          freshnessConfidence: 0.8,
+          locationConfidence: 0.86,
+          operationalConfidence: asNumber(
+            node.transportExitQuality,
+            "transportExitQuality"
+          ) / 100
+        },
+    placeMetadata: node.placeMetadata ? asPlaceMetadata(node.placeMetadata) : undefined
   };
 }
 
@@ -166,6 +200,18 @@ function asOptionalBoolean(value: unknown) {
 
   if (typeof value !== "boolean") {
     throw new Error("Optional boolean field must be true or false.");
+  }
+
+  return value;
+}
+
+function asOptionalString(value: unknown) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new Error("Optional string field must be a string.");
   }
 
   return value;
@@ -221,6 +267,75 @@ function asLane(value: unknown): "guardian" | "expressive" | "balanced" {
   }
 
   throw new Error('Field "laneBias" must be guardian, expressive, or balanced.');
+}
+
+function asSourceType(value: unknown): "editorial" | "google-places" {
+  if (value === "editorial" || value === "google-places") {
+    return value;
+  }
+
+  throw new Error('Field "sourceType" must be editorial or google-places.');
+}
+
+function asVerificationStatus(
+  value: unknown
+): "pending" | "matched" | "approved" | "rejected" | "stale" {
+  if (
+    value === "pending" ||
+    value === "matched" ||
+    value === "approved" ||
+    value === "rejected" ||
+    value === "stale"
+  ) {
+    return value;
+  }
+
+  throw new Error('Field "verificationStatus" is invalid.');
+}
+
+function asEditorialStatus(value: unknown): "draft" | "review" | "approved" | "rejected" {
+  if (value === "draft" || value === "review" || value === "approved" || value === "rejected") {
+    return value;
+  }
+
+  throw new Error('Field "editorialStatus" is invalid.');
+}
+
+function asTrustSignals(value: unknown) {
+  if (!value || typeof value !== "object") {
+    throw new Error('Field "trustSignals" must be an object.');
+  }
+
+  const signals = value as Record<string, unknown>;
+  return {
+    sourceConfidence: asNumber(signals.sourceConfidence, "trustSignals.sourceConfidence"),
+    freshnessConfidence: asNumber(signals.freshnessConfidence, "trustSignals.freshnessConfidence"),
+    locationConfidence: asNumber(signals.locationConfidence, "trustSignals.locationConfidence"),
+    operationalConfidence: asNumber(
+      signals.operationalConfidence,
+      "trustSignals.operationalConfidence"
+    )
+  };
+}
+
+function asPlaceMetadata(value: unknown) {
+  if (!value || typeof value !== "object") {
+    throw new Error('Field "placeMetadata" must be an object.');
+  }
+
+  const metadata = value as Record<string, unknown>;
+  return {
+    address: asOptionalString(metadata.address),
+    neighborhoodHint: asOptionalString(metadata.neighborhoodHint),
+    phone: asOptionalString(metadata.phone),
+    website: asOptionalString(metadata.website),
+    rating: metadata.rating === undefined ? undefined : asNumber(metadata.rating, "placeMetadata.rating"),
+    userRatingsTotal:
+      metadata.userRatingsTotal === undefined
+        ? undefined
+        : asNumber(metadata.userRatingsTotal, "placeMetadata.userRatingsTotal"),
+    mapsUrl: asOptionalString(metadata.mapsUrl)
+  };
 }
 
 function asDriftTriggers(value: unknown) {

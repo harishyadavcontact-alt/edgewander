@@ -908,7 +908,23 @@ export const seedExperiences: ExperienceNode[] = baseSeedExperiences.map((node) 
     exitConfidence: buildExitConfidence(node),
     arrivalModes: node.remoteArea ? ["transit", "rideshare"] : ["walk", "transit", "rideshare"],
     walkable: !node.remoteArea,
-    transitAccess: node.transportExitQuality >= 80
+    transitAccess: node.transportExitQuality >= 80,
+    sourceType: "editorial",
+    sourceId: undefined,
+    sourceUpdatedAt: "2026-03-08T00:00:00.000Z",
+    verificationStatus: "approved",
+    editorialStatus: "approved",
+    lastReviewedAt: "2026-03-08T00:00:00.000Z",
+    editorialNotes: "Curated seed node.",
+    trustSignals: {
+      sourceConfidence: node.sourceTrustLevel,
+      freshnessConfidence: 0.86,
+      locationConfidence: 0.89,
+      operationalConfidence: Number((node.transportExitQuality / 100).toFixed(2))
+    },
+    placeMetadata: {
+      neighborhoodHint: area
+    }
   } as ExperienceNode;
 });
 
