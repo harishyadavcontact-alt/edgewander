@@ -532,6 +532,11 @@ button {
   background: rgba(133, 198, 182, 0.08);
 }
 
+.banner--briefing {
+  border-color: rgba(242, 187, 107, 0.28);
+  background: rgba(242, 187, 107, 0.12);
+}
+
 .arc-stack {
   display: grid;
   gap: 18px;

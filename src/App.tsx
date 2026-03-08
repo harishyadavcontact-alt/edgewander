@@ -494,6 +494,10 @@ function App() {
     ingestionCandidates.find((candidate) => candidate.id === selectedCandidateId) ??
     ingestionCandidates[0] ??
     null;
+  const isFirstRunTokyo =
+    profile.destination === "Tokyo" &&
+    completedNodeIds.length === 0 &&
+    tripSession.confessionals.length === 0;
   const candidateInvariantFailures = candidateDraft ? publishInvariantFailures(candidateDraft) : [];
   const publishedByFreshness = {
     fresh: publishedSources.filter((record) => {
@@ -1735,6 +1739,14 @@ function App() {
             </div>
           )}
 
+          {isFirstRunTokyo && (
+            <div className="banner banner--briefing">
+              <strong>Tokyo briefing:</strong> Start with one Guardian branch to calibrate the city, then take one
+              Expressive branch inside the same envelope, then leave a confessional so the next trail sharpens around
+              your actual tolerance instead of your guess.
+            </div>
+          )}
+
           <div className="banner banner--quiet">
             Location source: {trail.locationSource}. Nearby arcs are composed around{" "}
             {trail.locationSource === "live" ? "your live position" : "the current city anchor"}.
@@ -1780,6 +1792,10 @@ function App() {
 
               <div className="notice notice--soft">
                 Exit route: {selectedExploreBranch.routePreview?.exitSummary ?? selectedExploreBranch.exitPlan}
+              </div>
+
+              <div className="notice notice--soft">
+                Why safe enough now: {selectedExploreBranch.rationale}
               </div>
 
               {selectedTrace && (
@@ -1890,6 +1906,11 @@ function App() {
             </button>
           </div>
 
+          <div className="notice notice--soft">
+            File the room cleanly: payoff, discomfort, consent clarity, crowd vibe, and how easy it was to exit.
+            This becomes the next layer of routing truth.
+          </div>
+
           <div className="review-grid">
             <RatingField
               label="Reward"
@@ -1964,7 +1985,7 @@ function App() {
               Cancel
             </button>
             <button className="primary-button" type="button" onClick={submitReview}>
-              Save confessional
+              Seal confessional
             </button>
           </div>
         </section>
@@ -2097,6 +2118,8 @@ function BranchCard(props: {
 
       <div className="branch__exit">Exit plan: {props.branch.exitPlan}</div>
 
+      <div className="branch__exit">Why safe enough now: {props.branch.rationale}</div>
+
       {node && props.branch.status !== "locked" && (
         <div className="branch__actions">
           <button
@@ -2107,7 +2130,7 @@ function BranchCard(props: {
             {completed ? "Completed" : "Mark complete"}
           </button>
           <button className="primary-button" type="button" onClick={() => props.onReview(props.branch)}>
-            Confessional
+            Log confessional
           </button>
         </div>
       )}
