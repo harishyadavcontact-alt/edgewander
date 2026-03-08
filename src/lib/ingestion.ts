@@ -354,6 +354,25 @@ export function publishInvariantFailures(draft: CandidatePublishDraft) {
   return failures;
 }
 
+export function nodeInvariantFailures(node: ExperienceNode) {
+  return publishInvariantFailures({
+    title: node.title,
+    category: node.category,
+    narrativeHook: node.narrativeHook,
+    themeTags: node.themeTags,
+    interestTags: node.interestTags,
+    legalConfidence: node.legalConfidence,
+    consentClarity: node.consentClarity,
+    exitOptions: node.exitOptions,
+    laneBias: node.laneBias,
+    edginess: node.edginess,
+    costBand: node.costBand,
+    durationMinutes: node.durationMinutes,
+    operatingWindows: node.operatingWindows,
+    editorialNotes: node.editorialNotes
+  });
+}
+
 export function canPublishCandidate(draft: CandidatePublishDraft) {
   return publishInvariantFailures(draft).length === 0;
 }

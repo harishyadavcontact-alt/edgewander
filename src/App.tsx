@@ -8,6 +8,7 @@ import {
   candidateDraftFromSource,
   freshnessStateFromTimestamp,
   importGooglePlacesCandidates,
+  nodeInvariantFailures,
   publishInvariantFailures,
   publishCandidateToCatalog,
   reverifyPublishedNode,
@@ -508,6 +509,19 @@ function App() {
       return freshnessStateFromTimestamp(node?.sourceUpdatedAt) === "stale";
     })
   };
+  const publishedAudit = publishedSources.map((record) => {
+    const node = catalog.find((entry) => entry.id === record.nodeId) ?? null;
+    const freshness = freshnessStateFromTimestamp(node?.sourceUpdatedAt);
+    const failures = node ? nodeInvariantFailures(node) : ["Published source mapping is missing its catalog node."];
+
+    return {
+      record,
+      node,
+      freshness,
+      failures
+    };
+  });
+  const invalidPublishedCount = publishedAudit.filter((entry) => entry.failures.length > 0).length;
 
   function touchTravelerSync() {
     setSyncMetadata((current) => ({
@@ -1661,14 +1675,16 @@ function App() {
                   <strong>Stale</strong>
                   <div className="sync-copy">{publishedByFreshness.stale.length} nodes</div>
                 </article>
+                <article className="essential-card">
+                  <strong>Invariant drift</strong>
+                  <div className="sync-copy">{invalidPublishedCount} nodes need editorial repair</div>
+                </article>
               </div>
 
               {publishedSources.length === 0 && (
                 <div className="notice notice--soft">No external-source publications yet.</div>
               )}
-              {publishedSources.map((record) => {
-                const node = catalog.find((entry) => entry.id === record.nodeId);
-                const freshness = freshnessStateFromTimestamp(node?.sourceUpdatedAt);
+              {publishedAudit.map(({ record, node, freshness, failures }) => {
                 return (
                   <article className="essential-card" key={`${record.nodeId}-${record.sourceId}`}>
                     <strong>{node?.title ?? record.nodeId}</strong>
@@ -1683,6 +1699,16 @@ function App() {
                     <div className="sync-copy">
                       Trust badge: {node ? trustBadgeForNode(node) : "Vetted"}
                     </div>
+                    {failures.length > 0 && (
+                      <div className="notice notice--soft notice--warn">
+                        <strong>Invariant drift detected:</strong>
+                        <ul className="notice-list">
+                          {failures.map((failure) => (
+                            <li key={failure}>{failure}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     <div className="drawer-actions">
                       <button className="ghost-button" type="button" onClick={() => reverifyPublished(record.nodeId)}>
                         Re-verify source

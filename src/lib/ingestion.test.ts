@@ -7,6 +7,7 @@ import {
   canPublishCandidate,
   candidateDraftFromSource,
   freshnessStateFromTimestamp,
+  nodeInvariantFailures,
   publishInvariantFailures,
   publishCandidateToCatalog,
   reverifyPublishedNode
@@ -181,5 +182,20 @@ describe("Google Places ingestion pipeline", () => {
     expect(node?.sourceUpdatedAt).toBe("2026-03-08T12:00:00.000Z");
     expect(sourceRecord?.lastVerifiedAt).toBe("2026-03-08T12:00:00.000Z");
     expect(freshnessStateFromTimestamp(node?.sourceUpdatedAt)).toBe("fresh");
+  });
+
+  it("audits published nodes for invariant drift using the same Guardian publication rules", () => {
+    const brokenNode = {
+      ...seedExperiences.find((node) => node.id === "tokyo-jimbocho-occult-stack")!,
+      themeTags: [],
+      exitOptions: [],
+      legalConfidence: 0.7
+    };
+
+    const failures = nodeInvariantFailures(brokenNode);
+
+    expect(failures).toContain("At least one Red Thread theme tag is required.");
+    expect(failures).toContain("At least one explicit exit option is required.");
+    expect(failures).toContain("Legal confidence must be at least 0.95.");
   });
 });
