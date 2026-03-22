@@ -2,6 +2,23 @@
 
 Mobile-first prototype for a solo travel quest app that balances `Guardian` safety constraints with `Daredevil` novelty.
 
+## Reading Order
+
+1. `neoFlunare_genesis.md`
+2. `README.md`
+3. `docs/root-docs/`
+
+`neoFlunare_genesis.md` is the local source of truth for repo doctrine and agent starting context.
+Use this `README.md` as the root implementation map.
+
+## Development Model
+
+This repo follows a genesis-first, bottom-up development model:
+
+- global doctrine lives above the repo
+- `neoFlunare_genesis.md` governs the repo locally
+- feature work should be clarified as close to execution as possible
+
 ## What is implemented
 
 - Living trail with 3 nearby quest arcs per session
@@ -78,6 +95,13 @@ Guardrails:
   - city + trip start keyed session state
   - visited, skipped, quarantined nodes
   - confessionals
+
+## Product docs
+
+- `docs/root-docs/PRODUCT_DOC.md`
+- `docs/root-docs/TECH_SPEC.md`
+- `docs/root-docs/CHANGELOG.md`
+- `docs/root-docs/MAP_FIRST_EXPLORATION_SPEC.md`
   - last known map region and effective location
 
 ## CI
